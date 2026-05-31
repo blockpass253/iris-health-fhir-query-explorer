@@ -13,17 +13,39 @@
 - `intersystems-irispython` — official IRIS DB-API driver
 - OpenAI SDK — structured semantic extraction
 - Pydantic v2 — typed query-plan models
+- Typer + Textual + Rich — CLI and interactive analytics TUI
+- structlog — structured logging for the indexing pipeline
 - SQLGlot — deterministic SQL building *(planned)*
-- Textual + Typer + Rich — interactive analytics TUI *(planned)*
 
 ## Current state
 
-Early scaffold — only the IRIS connectivity layer exists; the
-semantic/mapping/SQL-generation pipeline and TUI are not yet built.
+The IRIS connectivity layer and the deterministic **schema indexing pipeline**
+are in place. The pipeline introspects a FHIR SQL Builder projection, parses the
+FHIR paths embedded in column descriptions, infers physical and semantic
+relationships, builds a semantic graph, and persists a JSON registry — with no
+LLM involvement. The NL → query-plan → SQL-generation layers are not yet built.
 
 - [config.py](config.py) — `IrisSettings` (pydantic-settings), env-driven with an `IRIS_` prefix.
 - [iris_client.py](iris_client.py) — thin DB-API wrapper; `run_query()` returns list-of-dict rows for result sets, else `rowcount`.
 - [main.py](main.py) — smoke test that runs `SELECT $ZVERSION`.
+- [app/](app/) — the indexing pipeline (introspection, FHIR-path parsing, semantic inference, graph, persistence) plus the Typer CLI and Textual TUI.
+
+## Indexing a schema
+
+Introspect a FHIR SQL Builder projection and write the semantic registry to
+`data/schema_registry.json`:
+
+```bash
+uv run iris index-schema TEST1 --namespace FHIRSERVER   # or python -m app.cli ...
+uv run iris tui                                          # interactive TUI; then: /index-schema TEST1 --namespace FHIRSERVER
+```
+
+`--namespace` overrides `IRIS_NAMESPACE` for the run (FHIR projections often live
+in a dedicated namespace such as `FHIRSERVER`, separate from the default `USER`).
+The pipeline reports counts of tables, columns, physical relationships, and
+semantic FHIR relationships, and renders the inferred resource graph. Every
+inferred relationship carries a `confidence` and a `rationale` for
+explainability. `Base`/infrastructure tables and system columns are excluded.
 
 ## Setup
 
