@@ -20,12 +20,13 @@ def get_connection(settings: IrisSettings | None = None):
     :func:`iris_connection` for automatic cleanup.
     """
     settings = settings or get_settings()
-    return iris.dbapi.connect(  # pyright: ignore[reportAttributeAccessIssue]
+    return iris.connect(
         hostname=settings.host,
         port=settings.port,
         namespace=settings.namespace,
         username=settings.username,
         password=settings.password,
+        sharedmemory=False,
     )
 
 
