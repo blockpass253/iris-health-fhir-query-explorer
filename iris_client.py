@@ -3,15 +3,16 @@
 Uses the official ``intersystems-irispython`` driver (imported as ``iris``).
 """
 
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional, Sequence, Union
+from typing import Any
 
 import iris
 
 from config import IrisSettings, get_settings
 
 
-def get_connection(settings: Optional[IrisSettings] = None):
+def get_connection(settings: IrisSettings | None = None):
     """Open a DB-API connection to IRIS using the given (or default) settings.
 
     The driver expects ``hostname`` (not ``host``), so the setting is mapped
@@ -19,7 +20,7 @@ def get_connection(settings: Optional[IrisSettings] = None):
     :func:`iris_connection` for automatic cleanup.
     """
     settings = settings or get_settings()
-    return iris.dbapi.connect(
+    return iris.dbapi.connect(  # pyright: ignore[reportAttributeAccessIssue]
         hostname=settings.host,
         port=settings.port,
         namespace=settings.namespace,
@@ -29,7 +30,7 @@ def get_connection(settings: Optional[IrisSettings] = None):
 
 
 @contextmanager
-def iris_connection(settings: Optional[IrisSettings] = None) -> Iterator[Any]:
+def iris_connection(settings: IrisSettings | None = None) -> Iterator[Any]:
     """Context manager yielding an IRIS connection, closed on exit."""
     conn = get_connection(settings)
     try:
@@ -40,9 +41,9 @@ def iris_connection(settings: Optional[IrisSettings] = None) -> Iterator[Any]:
 
 def run_query(
     sql: str,
-    params: Optional[Sequence[Any]] = None,
-    settings: Optional[IrisSettings] = None,
-) -> Union[list[dict[str, Any]], int]:
+    params: Sequence[Any] | None = None,
+    settings: IrisSettings | None = None,
+) -> list[dict[str, Any]] | int:
     """Execute ``sql`` and return results.
 
     For statements that produce a result set (e.g. ``SELECT``), returns a list
@@ -56,6 +57,6 @@ def run_query(
             if cursor.description is None:
                 return cursor.rowcount
             columns = [col[0] for col in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
         finally:
             cursor.close()
