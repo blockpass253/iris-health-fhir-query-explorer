@@ -48,8 +48,11 @@ class IrisTUI(App):
 
     def _dispatch(self, command: str) -> None:
         log = self.query_one(RichLog)
+        if command == "/clear":
+            log.clear()
+            return
         if not command.startswith("/index-schema"):
-            log.write("[red]Unknown command. Try /index-schema <schema>.[/]")
+            log.write("[red]Unknown command. Try /index-schema <schema> or /clear.[/]")
             return
         parts = command.split()
         if len(parts) < 2:
