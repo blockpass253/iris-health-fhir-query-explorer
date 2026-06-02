@@ -11,7 +11,7 @@ import typer
 from rich.console import Console
 
 from app.commands.index_schema import format_summary, run_index_schema
-from app.commands.query import format_selection, run_resource_selection
+from app.commands.query import format_plan, format_selection, run_query_plan
 from app.schema.persistence.registry_store import DEFAULT_REGISTRY_PATH
 
 app = typer.Typer(
@@ -47,9 +47,10 @@ def query(
     question: str = typer.Argument(..., help="Natural-language clinical question."),
     registry: Path = _REGISTRY_OPTION,
 ) -> None:
-    """Select relevant semantic resources for QUESTION and show the subgraph."""
-    result = asyncio.run(run_resource_selection(question, registry_path=registry))
-    console.print(format_selection(result))
+    """Plan the semantic query for QUESTION and show the subgraph and plan."""
+    narrowed, plan = asyncio.run(run_query_plan(question, registry_path=registry))
+    console.print(format_selection(narrowed))
+    console.print(format_plan(plan))
 
 
 @app.command("tui")

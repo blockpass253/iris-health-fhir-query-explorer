@@ -10,7 +10,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Footer, Header, Input, RichLog
 
 from app.commands.index_schema import format_summary, run_index_schema
-from app.commands.query import format_selection, run_resource_selection
+from app.commands.query import format_plan, format_selection, run_query_plan
 
 
 class IrisTUI(App):
@@ -76,7 +76,9 @@ class IrisTUI(App):
         log = self.query_one(RichLog)
         log.write("[yellow]Selecting resources...[/]")
         try:
-            result = await run_resource_selection(question)
-            log.write(format_selection(result))
+            narrowed, plan = await run_query_plan(question)
+            log.write(format_selection(narrowed))
+            log.write("[yellow]Planning query...[/]")
+            log.write(format_plan(plan))
         except Exception as exc:  # surfaced to the user, not swallowed
-            log.write(f"[red]Resource selection failed: {exc}[/]")
+            log.write(f"[red]Query planning failed: {exc}[/]")
