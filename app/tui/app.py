@@ -1,18 +1,20 @@
 """Minimal Textual TUI for the semantic query tool.
 
 Intentionally unpolished (per current phase constraints): an input line plus a
-log pane. The only supported command so far is ``/index-schema <schema>``, which
-runs the same orchestrator as the CLI and renders its summary.
+log pane. ``/index-schema <schema>`` runs the indexing pipeline; any other
+(non-slash) line is treated as a natural-language clinical question and routed
+through LLM resource selection + semantic graph narrowing.
 """
 
 from textual.app import App, ComposeResult
 from textual.widgets import Footer, Header, Input, RichLog
 
 from app.commands.index_schema import format_summary, run_index_schema
+from app.commands.query import format_selection, run_resource_selection
 
 
 class IrisTUI(App):
-    """Interactive shell accepting slash commands."""
+    """Interactive shell accepting slash commands and natural-language questions."""
 
     TITLE = "IRIS Semantic Query Tool"
     CSS = "RichLog { border: round $primary; }"
@@ -20,12 +22,16 @@ class IrisTUI(App):
     def compose(self) -> ComposeResult:
         yield Header()
         yield RichLog(highlight=True, markup=True, wrap=True)
-        yield Input(placeholder="/index-schema TEST1 --namespace FHIRSERVER")
+        yield Input(
+            placeholder="Ask a question, or /index-schema TEST1 --namespace FHIRSERVER"
+        )
         yield Footer()
 
     def on_mount(self) -> None:
         self.query_one(RichLog).write(
-            "Type a command, e.g. [bold]/index-schema TEST1 --namespace FHIRSERVER[/]"
+            "Ask a clinical question (e.g. [bold]Show diabetic patients with recent "
+            "encounters[/]), or index a schema with "
+            "[bold]/index-schema TEST1 --namespace FHIRSERVER[/]."
         )
         self.query_one(Input).focus()
 
@@ -35,7 +41,10 @@ class IrisTUI(App):
         if not command:
             return
         self.query_one(RichLog).write(f"[dim]> {command}[/]")
-        self._dispatch(command)
+        if command.startswith("/"):
+            self._dispatch(command)
+        else:
+            self.run_worker(self._run_query(command), exclusive=True)
 
     def _dispatch(self, command: str) -> None:
         log = self.query_one(RichLog)
@@ -62,3 +71,12 @@ class IrisTUI(App):
             log.write(format_summary(registry))
         except Exception as exc:  # surfaced to the user, not swallowed
             log.write(f"[red]Indexing failed: {exc}[/]")
+
+    async def _run_query(self, question: str) -> None:
+        log = self.query_one(RichLog)
+        log.write("[yellow]Selecting resources...[/]")
+        try:
+            result = await run_resource_selection(question)
+            log.write(format_selection(result))
+        except Exception as exc:  # surfaced to the user, not swallowed
+            log.write(f"[red]Resource selection failed: {exc}[/]")

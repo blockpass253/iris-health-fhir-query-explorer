@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install run lint format typecheck test check precommit clean
+.PHONY: help install run tui lint format typecheck test check precommit clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -11,6 +11,9 @@ install: ## Sync dependencies and install the pre-commit git hook
 
 run: ## Run the IRIS connectivity smoke test
 	uv run python main.py
+
+tui: ## Launch the interactive Textual TUI
+	uv run iris tui
 
 lint: ## Lint with ruff
 	uv run ruff check .
