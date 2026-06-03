@@ -19,6 +19,7 @@ from app.schema.introspection.queries import (
 from app.schema.models.registry import RelationshipType, SchemaRegistry
 from app.schema.persistence.registry_store import DEFAULT_REGISTRY_PATH, save_registry
 from app.semantic.inference import build_tables, infer_relationships, parse_columns
+from app.semantic.profiling import profile_coding_systems
 
 log = get_logger("index_schema")
 
@@ -36,7 +37,11 @@ def run_index_schema(
     namespace: str | None = None,
     registry_path: Path = DEFAULT_REGISTRY_PATH,
 ) -> SchemaRegistry:
-    """Index ``schema`` and persist the resulting semantic registry."""
+    """Index ``schema`` and persist the resulting semantic registry.
+
+    Also samples coding ``system`` columns to record which terminologies each
+    resource uses (reads data, not just metadata).
+    """
     settings = _resolve_settings(namespace)
     log.info("index.start", schema=schema, namespace=settings.namespace)
 
@@ -52,6 +57,7 @@ def run_index_schema(
 
     parsed_by_table = parse_columns(raw_columns)
     tables = build_tables(raw_tables, parsed_by_table)
+    profile_coding_systems(tables, schema, settings=settings)
     relationships = infer_relationships(tables, raw_fks)
     graph = build_semantic_graph(tables, relationships)
 
@@ -61,11 +67,15 @@ def run_index_schema(
         if r.relationship_type == RelationshipType.PHYSICAL_FOREIGN_KEY
     )
     semantic = len(relationships) - physical
+    coding_columns_profiled = sum(
+        1 for t in tables.values() for c in t.columns if c.coding_systems
+    )
     stats = {
         "tables": len(tables),
         "columns": sum(len(t.columns) for t in tables.values()),
         "physical_relationships": physical,
         "semantic_relationships": semantic,
+        "coding_columns_profiled": coding_columns_profiled,
     }
     log.info("inference.done", **stats)
 
@@ -84,11 +94,37 @@ def run_index_schema(
     return registry
 
 
+def _coding_systems_lines(registry: SchemaRegistry) -> list[str]:
+    """Roll up profiled coding systems to their parent resource for display.
+
+    A coding table reaches its root resource through its nested physical FK edge
+    (``source_table`` -> ``target_table``). Tables that carry no nested edge fall
+    back to their own name.
+    """
+    nested_parent = {
+        r.source_table: r.target_table
+        for r in registry.relationships
+        if r.is_nested and r.target_table is not None
+    }
+    lines: list[str] = []
+    for table_name, table in registry.tables.items():
+        systems = sorted({u.system for c in table.columns for u in c.coding_systems})
+        if not systems:
+            continue
+        parent = nested_parent.get(table_name, table_name)
+        resource = registry.tables.get(parent)
+        label = (resource and resource.inferred_resource_type) or parent
+        lines.append(f"- {label} ({table_name}): {', '.join(systems)}")
+    return lines
+
+
 def format_summary(
     registry: SchemaRegistry, registry_path: Path = DEFAULT_REGISTRY_PATH
 ) -> str:
     """Render the human-readable indexing summary shared by the CLI and TUI."""
     s = registry.stats
+    coding_lines = _coding_systems_lines(registry)
+    coding_block = ["", "Coding systems in use:", *coding_lines] if coding_lines else []
     return "\n".join(
         [
             f"Indexed schema: {registry.schema_name} (namespace {registry.namespace})",
@@ -98,6 +134,7 @@ def format_summary(
             f"- {s['columns']} columns",
             f"- {s['physical_relationships']} physical relationships",
             f"- {s['semantic_relationships']} semantic FHIR relationships",
+            *coding_block,
             "",
             "Semantic graph:",
             render_graph_tree(registry.graph),

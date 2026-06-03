@@ -53,6 +53,13 @@ class ParsedFHIRPath(BaseModel):
     terminal_field: str | None = None
 
 
+class CodingSystemUsage(BaseModel):
+    """A coding ``system`` URI observed in a column's data, with its row count."""
+
+    system: str
+    count: int | None = None
+
+
 class ColumnMetadata(BaseModel):
     """A semantically meaningful column within a projected table."""
 
@@ -61,6 +68,7 @@ class ColumnMetadata(BaseModel):
     fhir_path_raw: str | None = None
     parsed_fhir_path: ParsedFHIRPath | None = None
     semantic_type: SemanticType | None = None
+    coding_systems: list[CodingSystemUsage] = Field(default_factory=list)
 
 
 class TableMetadata(BaseModel):

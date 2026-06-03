@@ -94,3 +94,34 @@ def fetch_foreign_keys(
         )
         for r in rows
     ]
+
+
+def _quote_ident(ident: str) -> str:
+    """Double-quote an SQL identifier, escaping embedded quotes."""
+    return '"' + ident.replace('"', '""') + '"'
+
+
+def fetch_distinct_values(
+    schema: str,
+    table: str,
+    column: str,
+    settings: IrisSettings | None = None,
+    limit: int = 25,
+) -> list[tuple[str, int]]:
+    """Sample the most common distinct non-null values of one column.
+
+    Returns ``(value, row_count)`` pairs ordered by descending count. Identifiers
+    originate from ``INFORMATION_SCHEMA`` (trusted) and are double-quoted; only the
+    ``limit`` is interpolated, as an int. ``TOP`` + ``GROUP BY`` bounds the result.
+    """
+    col = _quote_ident(column)
+    sql = (
+        f"SELECT TOP {int(limit)} {col} AS val, COUNT(*) AS n "
+        f"FROM {_quote_ident(schema)}.{_quote_ident(table)} "
+        f"WHERE {col} IS NOT NULL "
+        f"GROUP BY {col} "
+        f"ORDER BY n DESC"
+    )
+    rows = run_query(sql, settings=settings)
+    assert isinstance(rows, list)
+    return [(r["val"], r["n"]) for r in rows]
