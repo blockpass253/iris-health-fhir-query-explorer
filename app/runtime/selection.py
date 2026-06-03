@@ -6,6 +6,9 @@ structured extraction; its output is validated against the context so it cannot
 introduce resources that do not exist.
 """
 
+from openai.types.responses import ResponseInputParam
+
+from app.debug.dump import record_llm
 from app.llm.client import get_async_client
 from app.llm.settings import get_llm_settings
 from app.logging.setup import get_logger
@@ -57,14 +60,16 @@ async def select_resources(query: str, ctx: RuntimeContext) -> ResourceSelection
         f"Available semantic resources (JSON):\n{ctx.model_dump_json()}"
     )
 
+    messages: ResponseInputParam = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
     response = await client.responses.parse(
         model=settings.model,
-        input=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
+        input=messages,
         text_format=ResourceSelectionResult,
     )
     parsed = response.output_parsed or ResourceSelectionResult()
     log.info("selection.raw", resources=parsed.resources)
+    record_llm("selection", settings.model, messages, parsed, raw=response)
     return validate_selection(parsed, ctx)

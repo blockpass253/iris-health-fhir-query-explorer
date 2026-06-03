@@ -91,14 +91,31 @@ def _temporal_phrase(filter_: SemanticFilter) -> str | None:
     return " ".join(p for p in parts if p) or "relative window"
 
 
+def _is_membership(filter_: SemanticFilter) -> bool:
+    """True when concept and value say the same thing (e.g. diabetes==diabetes).
+
+    The planner often emits a presence filter as ``{concept, contains, value}``
+    with the value echoing the concept. Rendered literally that reads as
+    "diabetes contains diabetes"; it really just means "match the concept".
+    """
+    if filter_.concept is None or filter_.value is None:
+        return False
+    if filter_.operator not in ("contains", "=", "in"):
+        return False
+    return str(filter_.value).strip().lower() == filter_.concept.strip().lower()
+
+
 def _filter_phrase(filter_: SemanticFilter) -> str:
-    """Render one semantic filter as a compact, explainable line."""
-    temporal = _temporal_phrase(filter_)
+    """Render one semantic filter as a compact, explainable line (no resource)."""
     if filter_.concept and filter_.operator and filter_.value is not None:
-        return f"{filter_.concept} {filter_.operator} {filter_.value}"
+        if not _is_membership(filter_):
+            return f"{filter_.concept} {filter_.operator} {filter_.value}"
     if filter_.concept:
         return filter_.concept
-    if temporal:
+    if filter_.operator and filter_.value is not None:
+        subject = filter_.path or filter_.resource
+        return f"{subject} {filter_.operator} {filter_.value}"
+    if temporal := _temporal_phrase(filter_):
         return temporal
     if filter_.path:
         return filter_.path
@@ -118,12 +135,11 @@ def format_plan(plan: SemanticQueryPlan) -> str:
     if plan.filters:
         for f in plan.filters:
             phrase = _filter_phrase(f)
-            lines.append(f"- {phrase}")
-            # A comparison filter may also carry a temporal window; show it
-            # too, unless the phrase already is the temporal one.
+            # Fold the temporal window into the same line, unless the phrase
+            # already is the temporal one.
             temporal = _temporal_phrase(f)
-            if temporal and temporal != phrase:
-                lines.append(f"- {temporal}")
+            suffix = f" [dim]({temporal})[/]" if temporal and temporal != phrase else ""
+            lines.append(f"- [b]{f.resource}[/]: {phrase}{suffix}")
     else:
         lines.append("- (none)")
 

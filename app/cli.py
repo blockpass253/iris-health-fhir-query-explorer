@@ -12,6 +12,7 @@ from rich.console import Console
 
 from app.commands.index_schema import format_summary, run_index_schema
 from app.commands.query import format_plan, format_selection, run_query_plan
+from app.debug.dump import start_message
 from app.schema.persistence.registry_store import DEFAULT_REGISTRY_PATH
 
 app = typer.Typer(
@@ -48,6 +49,7 @@ def query(
     registry: Path = _REGISTRY_OPTION,
 ) -> None:
     """Plan the semantic query for QUESTION and show the subgraph and plan."""
+    start_message(question)
     narrowed, plan = asyncio.run(run_query_plan(question, registry_path=registry))
     console.print(format_selection(narrowed))
     console.print(format_plan(plan))

@@ -10,6 +10,9 @@ resources or FHIR paths that were not selected, and it never emits SQL.
 
 import json
 
+from openai.types.responses import ResponseInputParam
+
+from app.debug.dump import record_llm
 from app.llm.client import get_async_client
 from app.llm.settings import get_llm_settings
 from app.logging.setup import get_logger
@@ -156,14 +159,16 @@ async def plan_query(query: str, narrowed: NarrowedSubgraph) -> SemanticQueryPla
         f"Narrowed semantic context (JSON):\n{_context_payload(narrowed)}"
     )
 
+    messages: ResponseInputParam = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
     response = await client.responses.parse(
         model=settings.model,
-        input=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
+        input=messages,
         text_format=SemanticQueryPlan,
     )
     parsed = response.output_parsed or SemanticQueryPlan(intent="unknown")
     log.info("planning.raw", intent=parsed.intent, resources=parsed.resources)
+    record_llm("planning", settings.model, messages, parsed, raw=response)
     return validate_plan(parsed, narrowed)

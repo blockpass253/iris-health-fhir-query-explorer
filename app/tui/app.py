@@ -11,6 +11,7 @@ from textual.widgets import Footer, Header, Input, RichLog
 
 from app.commands.index_schema import format_summary, run_index_schema
 from app.commands.query import format_plan, format_selection, run_query_plan
+from app.debug.dump import record_output, start_message
 
 
 class IrisTUI(App):
@@ -27,8 +28,13 @@ class IrisTUI(App):
         )
         yield Footer()
 
+    def _log(self, text: str) -> None:
+        """Write to the log pane and mirror it to the debug output file."""
+        self.query_one(RichLog).write(text)
+        record_output(text)
+
     def on_mount(self) -> None:
-        self.query_one(RichLog).write(
+        self._log(
             "Ask a clinical question (e.g. [bold]Show diabetic patients with recent "
             "encounters[/]), or index a schema with "
             "[bold]/index-schema TEST1 --namespace FHIRSERVER[/]."
@@ -40,23 +46,24 @@ class IrisTUI(App):
         event.input.clear()
         if not command:
             return
-        self.query_one(RichLog).write(f"[dim]> {command}[/]")
+        # Reset the per-message dump files before any output or LLM call.
+        start_message(command)
+        self._log(f"[dim]> {command}[/]")
         if command.startswith("/"):
             self._dispatch(command)
         else:
             self.run_worker(self._run_query(command), exclusive=True)
 
     def _dispatch(self, command: str) -> None:
-        log = self.query_one(RichLog)
         if command == "/clear":
-            log.clear()
+            self.query_one(RichLog).clear()
             return
         if not command.startswith("/index-schema"):
-            log.write("[red]Unknown command. Try /index-schema <schema> or /clear.[/]")
+            self._log("[red]Unknown command. Try /index-schema <schema> or /clear.[/]")
             return
         parts = command.split()
         if len(parts) < 2:
-            log.write("[red]Usage: /index-schema <schema> [--namespace NS][/]")
+            self._log("[red]Usage: /index-schema <schema> [--namespace NS][/]")
             return
         schema = parts[1]
         namespace = None
@@ -67,21 +74,19 @@ class IrisTUI(App):
         self._run_index(schema, namespace)
 
     def _run_index(self, schema: str, namespace: str | None) -> None:
-        log = self.query_one(RichLog)
-        log.write(f"[yellow]Indexing {schema}...[/]")
+        self._log(f"[yellow]Indexing {schema}...[/]")
         try:
             registry = run_index_schema(schema, namespace=namespace)
-            log.write(format_summary(registry))
+            self._log(format_summary(registry))
         except Exception as exc:  # surfaced to the user, not swallowed
-            log.write(f"[red]Indexing failed: {exc}[/]")
+            self._log(f"[red]Indexing failed: {exc}[/]")
 
     async def _run_query(self, question: str) -> None:
-        log = self.query_one(RichLog)
-        log.write("[yellow]Selecting resources...[/]")
+        self._log("[yellow]Selecting resources...[/]")
         try:
             narrowed, plan = await run_query_plan(question)
-            log.write(format_selection(narrowed))
-            log.write("[yellow]Planning query...[/]")
-            log.write(format_plan(plan))
+            self._log(format_selection(narrowed))
+            self._log("[yellow]Planning query...[/]")
+            self._log(format_plan(plan))
         except Exception as exc:  # surfaced to the user, not swallowed
-            log.write(f"[red]Query planning failed: {exc}[/]")
+            self._log(f"[red]Query planning failed: {exc}[/]")
