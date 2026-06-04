@@ -1,29 +1,29 @@
 """Orchestrator for the runtime query pipeline.
 
 Single source of truth shared by the Typer CLI and the Textual TUI. Loads the
-indexed registry, builds the compact semantic context, runs LLM resource
-selection, narrows the semantic graph, runs LLM semantic query planning, and
-returns the narrowed subgraph and the structured plan plus human-readable
-summaries. No SQL is generated or executed here.
+indexed registry, runs LLM extraction (question -> ungrounded plan), then LLM
+binding (plan -> schema-grounded plan with a feasibility verdict), and returns
+both plus human-readable summaries. The pipeline stops at the grounded plan; no
+SQL is generated or executed here. When the schema cannot fully answer the
+question, :class:`InfeasibleQuery` is raised carrying both plans for rendering.
 """
 
 from pathlib import Path
 
 from app.logging.setup import get_logger
-from app.runtime.context import build_runtime_context
-from app.runtime.models import NarrowedSubgraph, SemanticFilter, SemanticQueryPlan
-from app.runtime.narrowing import narrow_subgraph
-from app.runtime.planning import plan_query
-from app.runtime.selection import select_resources
+from app.runtime.binding import bind_plan
+from app.runtime.errors import InfeasibleQuery
+from app.runtime.extraction import extract_plan
+from app.runtime.models import BoundPlan, Filter, QueryPlan, TemporalConstraint
 from app.schema.persistence.registry_store import DEFAULT_REGISTRY_PATH, load_registry
 
 log = get_logger("query")
 
 
-async def run_resource_selection(
+async def run_query_plan(
     query: str, registry_path: Path = DEFAULT_REGISTRY_PATH
-) -> NarrowedSubgraph:
-    """Select relevant resources for ``query`` and narrow the semantic graph."""
+) -> tuple[QueryPlan, BoundPlan]:
+    """Extract a plan, bind it to the indexed schema, and gate on feasibility."""
     if not registry_path.exists():
         raise FileNotFoundError(
             f"No semantic registry at {registry_path}. "
@@ -33,132 +33,106 @@ async def run_resource_selection(
     registry = load_registry(registry_path)
     log.info("query.start", query=query, schema=registry.schema_name)
 
-    ctx = build_runtime_context(registry)
-    selection = await select_resources(query, ctx)
-    log.info("query.selected", resources=selection.resources)
+    plan = await extract_plan(query)
+    log.info("query.extracted", intent=plan.intent, resources=plan.resources)
 
-    return narrow_subgraph(registry, selection.resources, reasoning=selection.reasoning)
+    bound = await bind_plan(plan, registry)
+    if not bound.feasibility.can_answer:
+        raise InfeasibleQuery(bound.feasibility.missing, query_plan=plan, bound=bound)
 
-
-async def run_query_plan(
-    query: str, registry_path: Path = DEFAULT_REGISTRY_PATH
-) -> tuple[NarrowedSubgraph, SemanticQueryPlan]:
-    """Run the full pipeline: select + narrow, then plan the semantic query."""
-    narrowed = await run_resource_selection(query, registry_path=registry_path)
-    plan = await plan_query(query, narrowed)
-    log.info("query.planned", intent=plan.intent, filters=len(plan.filters))
-    return narrowed, plan
+    log.info("query.bound", tables=bound.resource_tables)
+    return plan, bound
 
 
-def format_selection(result: NarrowedSubgraph) -> str:
-    """Render the narrowed subgraph for the CLI and TUI."""
-    lines: list[str] = ["Selected Resources:"]
-    if result.resources:
-        lines.extend(f"- {name}" for name in result.resources)
+# --- Rendering ---------------------------------------------------------------
+
+
+def _temporal_phrase(tc: TemporalConstraint) -> str:
+    """Human-readable phrase for a relative time window."""
+    if tc.label:
+        return tc.label
+    if tc.last_n_days is not None:
+        return f"last {tc.last_n_days} days"
+    if tc.last_n_months is not None:
+        return f"last {tc.last_n_months} months"
+    if tc.last_n_years is not None:
+        return f"last {tc.last_n_years} years"
+    return "relative window"
+
+
+def _filter_phrase(flt: Filter) -> str:
+    """Compact phrase for a filter (concept, or path operator value)."""
+    if flt.concept and not (flt.operator and flt.value is not None):
+        return flt.concept
+    subject = flt.concept or flt.path or flt.resource
+    if flt.operator and flt.value is not None:
+        return f"{subject} {flt.operator} {flt.value}"
+    return subject
+
+
+def format_extracted(plan: QueryPlan) -> str:
+    """Render the ungrounded extracted plan for the CLI and TUI."""
+    lines: list[str] = ["[b]Extracted Plan[/]", f"Intent: {plan.intent}"]
+    lines += ["", "Resources:"]
+    if plan.resources:
+        lines.extend(f"- {r}" for r in plan.resources)
     else:
         lines.append("- (none)")
-    for connector in result.bridge_connectors:
-        lines.append(f"- {connector} (bridge)")
 
     lines.append("")
-    lines.append("Relevant Relationships:")
-    if result.relationships:
-        lines.extend(
-            f"- {edge.source} → {edge.target}" for edge in result.relationships
-        )
+    lines.append("Filters:")
+    if plan.filters:
+        for f in plan.filters:
+            lines.append(f"- [b]{f.resource}[/]: {_filter_phrase(f)}")
     else:
         lines.append("- (none)")
 
-    if result.reasoning:
+    if plan.temporal_constraints:
         lines.append("")
-        lines.append(f"[dim]{result.reasoning}[/]")
+        lines.append("Time Windows:")
+        for tc in plan.temporal_constraints:
+            lines.append(f"- [b]{tc.resource}[/]: {_temporal_phrase(tc)}")
 
     return "\n".join(lines)
 
 
-def _temporal_phrase(filter_: SemanticFilter) -> str | None:
-    """Human-readable phrase for a filter's temporal constraint, if any."""
-    tc = filter_.temporal_constraint
-    if tc is None:
-        return None
-    if tc.label:
-        return tc.label
-    if tc.kind == "absolute":
-        if tc.start and tc.end:
-            return f"{tc.start} to {tc.end}"
-        return tc.start or tc.end or "absolute window"
-    parts = [p for p in (tc.direction, str(tc.amount) if tc.amount else None, tc.unit)]
-    return " ".join(p for p in parts if p) or "relative window"
-
-
-def _is_membership(filter_: SemanticFilter) -> bool:
-    """True when concept and value say the same thing (e.g. diabetes==diabetes).
-
-    The planner often emits a presence filter as ``{concept, contains, value}``
-    with the value echoing the concept. Rendered literally that reads as
-    "diabetes contains diabetes"; it really just means "match the concept".
-    """
-    if filter_.concept is None or filter_.value is None:
-        return False
-    if filter_.operator not in ("contains", "=", "in"):
-        return False
-    return str(filter_.value).strip().lower() == filter_.concept.strip().lower()
-
-
-def _filter_phrase(filter_: SemanticFilter) -> str:
-    """Render one semantic filter as a compact, explainable line (no resource)."""
-    if filter_.concept and filter_.operator and filter_.value is not None:
-        if not _is_membership(filter_):
-            return f"{filter_.concept} {filter_.operator} {filter_.value}"
-    if filter_.concept:
-        return filter_.concept
-    if filter_.operator and filter_.value is not None:
-        subject = filter_.path or filter_.resource
-        return f"{subject} {filter_.operator} {filter_.value}"
-    if temporal := _temporal_phrase(filter_):
-        return temporal
-    if filter_.path:
-        return filter_.path
-    return filter_.resource
-
-
-def format_plan(plan: SemanticQueryPlan) -> str:
-    """Render the semantic query plan for the CLI and TUI."""
-    lines: list[str] = ["Intent:", f"- {plan.intent}", "", "Resources:"]
-    if plan.resources:
-        lines.extend(f"- {name}" for name in plan.resources)
-    else:
-        lines.append("- (none)")
-
-    lines.append("")
-    lines.append("Detected Filters:")
-    if plan.filters:
-        for f in plan.filters:
-            phrase = _filter_phrase(f)
-            # Fold the temporal window into the same line, unless the phrase
-            # already is the temporal one.
-            temporal = _temporal_phrase(f)
-            suffix = f" [dim]({temporal})[/]" if temporal and temporal != phrase else ""
-            lines.append(f"- [b]{f.resource}[/]: {phrase}{suffix}")
-    else:
-        lines.append("- (none)")
-
-    if plan.aggregation:
-        lines.append("")
-        lines.append("Aggregation:")
-        lines.append(f"- {plan.aggregation}")
-
-    lines.append("")
-    lines.append("Traversal Paths:")
-    if plan.traversal_paths:
+def format_bound(bound: BoundPlan) -> str:
+    """Render the schema-grounded bound plan, including the feasibility verdict."""
+    lines: list[str] = ["[b]Grounded Plan[/]", "", "Resource → Table:"]
+    if bound.resource_tables:
         lines.extend(
-            f"- {t.source_resource} → {t.target_resource}" for t in plan.traversal_paths
+            f"- {res} → {table}" for res, table in bound.resource_tables.items()
         )
     else:
         lines.append("- (none)")
 
-    if plan.reasoning:
+    lines.append("")
+    lines.append("Filters:")
+    if bound.filters:
+        for bf in bound.filters:
+            target = bf.column_path or bf.table
+            line = f"- [b]{bf.table}[/]: {_filter_phrase(bf.filter)} [dim]({target})[/]"
+            if bf.codings:
+                codes = ", ".join(
+                    f"{c.system.rsplit('/', 1)[-1]}:{c.code}" for c in bf.codings
+                )
+                line += f" [dim]codes={codes}[/]"
+            lines.append(line)
+    else:
+        lines.append("- (none)")
+
+    if bound.temporal_constraints:
         lines.append("")
-        lines.append(f"[dim]{plan.reasoning}[/]")
+        lines.append("Time Windows:")
+        for bt in bound.temporal_constraints:
+            phrase = _temporal_phrase(bt.constraint)
+            lines.append(f"- [b]{bt.table}[/]: {phrase} [dim]({bt.column_path})[/]")
+
+    lines.append("")
+    if bound.feasibility.can_answer:
+        lines.append("[green]✓ Answerable from the indexed schema.[/]")
+    else:
+        lines.append("[red]✗ Cannot fully answer — missing:[/]")
+        lines.extend(f"  [red]- {m}[/]" for m in bound.feasibility.missing)
 
     return "\n".join(lines)

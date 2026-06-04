@@ -10,8 +10,9 @@ from textual.app import App, ComposeResult
 from textual.widgets import Footer, Header, Input, RichLog
 
 from app.commands.index_schema import format_summary, run_index_schema
-from app.commands.query import format_plan, format_selection, run_query_plan
+from app.commands.query import format_bound, format_extracted, run_query_plan
 from app.debug.dump import record_output, start_message
+from app.runtime.errors import InfeasibleQuery
 
 
 class IrisTUI(App):
@@ -82,11 +83,14 @@ class IrisTUI(App):
             self._log(f"[red]Indexing failed: {exc}[/]")
 
     async def _run_query(self, question: str) -> None:
-        self._log("[yellow]Selecting resources...[/]")
+        self._log("[yellow]Extracting plan...[/]")
         try:
-            narrowed, plan = await run_query_plan(question)
-            self._log(format_selection(narrowed))
-            self._log("[yellow]Planning query...[/]")
-            self._log(format_plan(plan))
+            plan, bound = await run_query_plan(question)
+            self._log(format_extracted(plan))
+            self._log("[yellow]Grounding to schema...[/]")
+            self._log(format_bound(bound))
+        except InfeasibleQuery as exc:  # expected: schema can't answer
+            self._log(format_extracted(exc.query_plan))
+            self._log(format_bound(exc.bound))
         except Exception as exc:  # surfaced to the user, not swallowed
             self._log(f"[red]Query planning failed: {exc}[/]")

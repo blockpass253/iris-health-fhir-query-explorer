@@ -11,8 +11,9 @@ import typer
 from rich.console import Console
 
 from app.commands.index_schema import format_summary, run_index_schema
-from app.commands.query import format_plan, format_selection, run_query_plan
+from app.commands.query import format_bound, format_extracted, run_query_plan
 from app.debug.dump import start_message
+from app.runtime.errors import InfeasibleQuery
 from app.schema.persistence.registry_store import DEFAULT_REGISTRY_PATH
 
 app = typer.Typer(
@@ -48,11 +49,14 @@ def query(
     question: str = typer.Argument(..., help="Natural-language clinical question."),
     registry: Path = _REGISTRY_OPTION,
 ) -> None:
-    """Plan the semantic query for QUESTION and show the subgraph and plan."""
+    """Plan the semantic query for QUESTION: extract, ground, and show the plan."""
     start_message(question)
-    narrowed, plan = asyncio.run(run_query_plan(question, registry_path=registry))
-    console.print(format_selection(narrowed))
-    console.print(format_plan(plan))
+    try:
+        plan, bound = asyncio.run(run_query_plan(question, registry_path=registry))
+    except InfeasibleQuery as exc:
+        plan, bound = exc.query_plan, exc.bound
+    console.print(format_extracted(plan))
+    console.print(format_bound(bound))
 
 
 @app.command("tui")
