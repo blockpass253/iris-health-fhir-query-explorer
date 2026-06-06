@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "intersystems-irispython>=5.1.0",
+    "langgraph>=1.0,<2.0",
     "openai>=2.38.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.1",

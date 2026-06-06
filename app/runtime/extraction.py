@@ -1,11 +1,16 @@
 """LLM extraction: natural-language question -> ungrounded query plan.
 
-The first of two LLM stages. Working from the raw question alone (no schema), the
+The first of two LLM stages. Working from the conversation alone (no schema), the
 model produces a flat, structured :class:`QueryPlan`: the answer shape (intent),
 the generic FHIR resources involved, semantic filters, and relative time windows.
 It never sees or references the indexed schema — grounding is the binding step's
 job.
+
+The model receives the full conversation transcript (prior turns plus the latest
+question) so follow-ups like "just the ones over 65" can build on earlier turns.
 """
+
+from typing import cast
 
 from openai.types.responses import ResponseInputParam
 
@@ -21,15 +26,20 @@ log = get_logger("extraction")
 _SYSTEM_PROMPT = load_prompt("extraction")
 
 
-async def extract_plan(query: str) -> QueryPlan:
-    """Run LLM extraction for ``query`` and return the ungrounded plan."""
+async def extract_plan(history: list[dict[str, str]]) -> QueryPlan:
+    """Run LLM extraction over the conversation and return the ungrounded plan.
+
+    ``history`` is the running transcript of ``{"role", "content"}`` turns; the
+    last user turn is the current question and earlier turns provide follow-up
+    context.
+    """
     settings = get_llm_settings()
     client = get_async_client()
 
-    messages: ResponseInputParam = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content": f"Question:\n{query}"},
-    ]
+    messages = cast(
+        ResponseInputParam,
+        [{"role": "system", "content": _SYSTEM_PROMPT}, *history],
+    )
     response = await client.responses.parse(
         model=settings.model,
         input=messages,

@@ -1,28 +1,32 @@
 """Orchestrator for the runtime query pipeline.
 
-Single source of truth shared by the Typer CLI and the Textual TUI. Loads the
-indexed registry, runs LLM extraction (question -> ungrounded plan), then LLM
-binding (plan -> schema-grounded plan with a feasibility verdict), then
-deterministically generates SQL and executes it against IRIS, returning the
-plans, the generated SQL and the result rows. When the schema cannot fully
-answer the question, :class:`InfeasibleQuery` is raised carrying both plans for
-rendering (no SQL is generated in that case).
+Single source of truth shared by the Typer CLI and the Textual TUI. Both run the
+same LangGraph conversation graph (see :mod:`app.runtime.graph`): LLM extraction
+(question -> ungrounded plan), LLM binding (plan -> schema-grounded plan with a
+feasibility verdict), then deterministic SQL generation and execution.
+
+The CLI is single-shot — :func:`run_query_plan` runs the graph on a throwaway
+``thread_id`` and returns a :class:`QueryResult`. When the question is ambiguous
+or the schema cannot answer it, the graph pauses to ask a clarifying question;
+since the CLI is non-interactive it cannot reply, so that pause is surfaced as
+:class:`InfeasibleQuery` carrying both plans for rendering. The TUI drives the
+same graph interactively on a stable ``thread_id`` for multi-turn conversation.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
+from langchain_core.runnables import RunnableConfig
 from rich.console import RenderableType
 from rich.table import Table
 
-from app.iris import run_query
 from app.logging.setup import get_logger
-from app.runtime.binding import bind_plan
 from app.runtime.errors import InfeasibleQuery
-from app.runtime.extraction import extract_plan
+from app.runtime.graph import build_query_graph
 from app.runtime.models import BoundPlan, Filter, QueryPlan, TemporalConstraint
-from app.runtime.sql_generation import SqlQuery, generate_sql
+from app.runtime.sql_generation import SqlQuery
 from app.schema.persistence.registry_store import DEFAULT_REGISTRY_PATH, load_registry
 
 log = get_logger("query")
@@ -39,10 +43,23 @@ class QueryResult:
     error: str | None = None
 
 
+def result_from_state(state: dict[str, Any]) -> QueryResult:
+    """Build a :class:`QueryResult` from a finished graph state."""
+    plan = state.get("plan") or QueryPlan()
+    bound = state.get("bound") or BoundPlan(intent=plan.intent)
+    return QueryResult(
+        plan=plan,
+        bound=bound,
+        sql=state.get("sql"),
+        rows=state.get("rows"),
+        error=state.get("error"),
+    )
+
+
 async def run_query_plan(
     query: str, registry_path: Path = DEFAULT_REGISTRY_PATH
 ) -> QueryResult:
-    """Extract, bind, gate on feasibility, then generate and execute SQL."""
+    """Run the conversation graph once and return the result (single-shot CLI)."""
     if not registry_path.exists():
         raise FileNotFoundError(
             f"No semantic registry at {registry_path}. "
@@ -52,26 +69,22 @@ async def run_query_plan(
     registry = load_registry(registry_path)
     log.info("query.start", query=query, schema=registry.schema_name)
 
-    plan = await extract_plan(query)
-    log.info("query.extracted", intent=plan.intent, resources=plan.resources)
+    graph = build_query_graph(registry)
+    config: RunnableConfig = {"configurable": {"thread_id": str(uuid4())}}
+    state = await graph.ainvoke(
+        {"messages": [{"role": "user", "content": query}]}, config
+    )
 
-    bound = await bind_plan(plan, registry)
-    if not bound.feasibility.can_answer:
-        raise InfeasibleQuery(bound.feasibility.missing, query_plan=plan, bound=bound)
+    interrupts = state.get("__interrupt__")
+    if interrupts:  # graph paused to ask for clarification; CLI can't reply
+        plan = state.get("plan") or QueryPlan()
+        bound = state.get("bound") or BoundPlan(intent=plan.intent)
+        payload = interrupts[0].value
+        missing = payload.get("missing") or [payload.get("question", "")]
+        raise InfeasibleQuery(missing, query_plan=plan, bound=bound)
 
-    log.info("query.bound", tables=bound.resource_tables)
-
-    sql = generate_sql(bound, registry)
-    log.info("query.sql", params=sql.params)
-
-    result = QueryResult(plan=plan, bound=bound, sql=sql)
-    try:
-        result.rows = run_query(sql.sql, sql.params)
-        log.info("query.executed")
-    except Exception as exc:  # keep the SQL visible; surface the failure
-        result.error = str(exc)
-        log.warning("query.execute_failed", error=str(exc))
-    return result
+    log.info("query.done")
+    return result_from_state(state)
 
 
 # --- Rendering ---------------------------------------------------------------
