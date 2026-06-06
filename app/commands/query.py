@@ -23,6 +23,7 @@ from rich.console import RenderableType
 from rich.table import Table
 
 from app.logging.setup import get_logger
+from app.runtime.diagnosis import ProjectionSuggestion
 from app.runtime.errors import InfeasibleQuery
 from app.runtime.graph import build_query_graph
 from app.runtime.models import BoundPlan, Filter, QueryPlan, TemporalConstraint
@@ -81,7 +82,13 @@ async def run_query_plan(
         bound = state.get("bound") or BoundPlan(intent=plan.intent)
         payload = interrupts[0].value
         missing = payload.get("missing") or [payload.get("question", "")]
-        raise InfeasibleQuery(missing, query_plan=plan, bound=bound)
+        suggestions = [
+            ProjectionSuggestion.model_validate(s)
+            for s in payload.get("suggestions") or []
+        ]
+        raise InfeasibleQuery(
+            missing, query_plan=plan, bound=bound, suggestions=suggestions
+        )
 
     log.info("query.done")
     return result_from_state(state)
@@ -178,6 +185,24 @@ def format_bound(bound: BoundPlan) -> str:
         lines.append("[red]✗ Cannot fully answer — missing:[/]")
         lines.extend(f"  [red]- {m}[/]" for m in bound.feasibility.missing)
 
+    return "\n".join(lines)
+
+
+def format_projection_suggestions(suggestions: list[ProjectionSuggestion]) -> str:
+    """Render advisory FHIR resource/field suggestions for an infeasible query."""
+    lines: list[str] = [
+        "[b]To answer this, extend your FHIR projection with:[/]",
+        "",
+    ]
+    for s in suggestions:
+        lines.append(
+            f"- [b]{s.resource}[/] · [cyan]{s.field}[/] [dim]— {s.rationale}[/]"
+        )
+    lines.append("")
+    lines.append(
+        "[dim]Add these to the FHIR SQL Builder projection and re-index, "
+        "then re-run the query.[/]"
+    )
     return "\n".join(lines)
 
 

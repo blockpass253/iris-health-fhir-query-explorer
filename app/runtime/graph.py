@@ -19,8 +19,11 @@ State shape:
 - per-turn working fields (``plan``/``bound``/``sql``/``rows``/``error``):
   overwritten each turn; the caller renders them from the final state.
 
-Flow:: ``extract → (clarify | bind) → (clarify | sql) → finalize → END`` where
-``clarify`` interrupts for input and loops back to ``extract``.
+Flow:: ``extract → (clarify | bind) → (suggest_projection → clarify | sql) →
+finalize → END`` where ``clarify`` interrupts for input and loops back to
+``extract``. On an infeasible bind, ``suggest_projection`` adds an advisory LLM
+stage that names the FHIR resources/fields the user could project to close the
+gap, which ``clarify`` folds into its question.
 """
 
 import operator
@@ -35,7 +38,9 @@ from langgraph.types import Command, interrupt
 from app.iris import run_query
 from app.logging.setup import get_logger
 from app.runtime.binding import bind_plan
+from app.runtime.diagnosis import ProjectionSuggestion, diagnose_gap
 from app.runtime.extraction import extract_plan
+from app.runtime.grounding import build_schema_view
 from app.runtime.models import BoundPlan, QueryPlan
 from app.runtime.sql_generation import SqlQuery, generate_sql
 from app.schema.models.registry import SchemaRegistry
@@ -50,6 +55,7 @@ _SERDE = JsonPlusSerializer(
         ("app.runtime.models", "QueryPlan"),
         ("app.runtime.models", "BoundPlan"),
         ("app.runtime.sql_generation", "SqlQuery"),
+        ("app.runtime.diagnosis", "ProjectionSuggestion"),
     ]
 )
 
@@ -60,6 +66,7 @@ class ConversationState(TypedDict):
     messages: Annotated[list[dict[str, str]], operator.add]
     plan: NotRequired[QueryPlan | None]
     bound: NotRequired[BoundPlan | None]
+    suggestions: NotRequired[list[ProjectionSuggestion] | None]
     sql: NotRequired[SqlQuery | None]
     rows: NotRequired[list[dict[str, Any]] | int | None]
     error: NotRequired[str | None]
@@ -115,6 +122,23 @@ def build_query_graph(registry: SchemaRegistry) -> CompiledStateGraph:
         log.info("graph.bind", can_answer=bound.feasibility.can_answer)
         return {"bound": bound}
 
+    async def suggest_projection(state: ConversationState) -> dict[str, Any]:
+        """Advisory LLM stage: name the FHIR resources/fields that would close the gap.
+
+        Runs only on the infeasible path. Best-effort — any failure degrades to no
+        suggestions so ``clarify`` falls back to the plain "can't answer" message.
+        """
+        plan = state.get("plan")
+        bound = state.get("bound")
+        assert plan is not None and bound is not None  # routed here only if infeasible
+        try:
+            view = build_schema_view(registry)
+            gap = await diagnose_gap(plan, bound, view, state["messages"])
+            return {"suggestions": gap.suggestions}
+        except Exception as exc:  # advisory only; never block the clarification
+            log.warning("graph.suggest_failed", error=str(exc))
+            return {"suggestions": []}
+
     def clarify(state: ConversationState) -> Command[Literal["extract"]]:
         """Pause for a clarifying question, then loop back to extraction.
 
@@ -123,20 +147,43 @@ def build_query_graph(registry: SchemaRegistry) -> CompiledStateGraph:
         """
         plan = state.get("plan")
         bound = state.get("bound")
+        suggestions: list[ProjectionSuggestion] = []
         if plan is not None and plan.clarifying_question:
             question = plan.clarifying_question
             missing: list[str] = []
         elif bound is not None:
             missing = bound.feasibility.missing
+            suggestions = state.get("suggestions") or []
             question = (
                 "I can't fully answer that from the indexed schema "
-                f"({'; '.join(missing)}). Could you rephrase or narrow it?"
+                f"({'; '.join(missing)})."
             )
+            if suggestions:
+                # Turn the dead-end into actionable projection guidance.
+                lines = "\n".join(
+                    f"  • {s.resource}.{s.field.split('.', 1)[-1]} — {s.rationale}"
+                    if "." in s.field
+                    else f"  • {s.field} — {s.rationale}"
+                    for s in suggestions
+                )
+                question += (
+                    "\nTo support this, consider extending your FHIR projection with:\n"
+                    f"{lines}\nRe-index after extending the projection, or rephrase "
+                    "the question."
+                )
+            else:
+                question += " Could you rephrase or narrow it?"
         else:  # defensive; routing should not reach here otherwise
             question = "Could you clarify what you're looking for?"
             missing = []
 
-        answer = interrupt({"question": question, "missing": missing})
+        answer = interrupt(
+            {
+                "question": question,
+                "missing": missing,
+                "suggestions": [s.model_dump() for s in suggestions],
+            }
+        )
         return Command(
             update={"messages": [{"role": "user", "content": str(answer)}]},
             goto="extract",
@@ -165,20 +212,28 @@ def build_query_graph(registry: SchemaRegistry) -> CompiledStateGraph:
         plan = state.get("plan")
         return "clarify" if plan and plan.clarifying_question else "bind"
 
-    def route_after_bind(state: ConversationState) -> Literal["clarify", "run_sql"]:
+    def route_after_bind(
+        state: ConversationState,
+    ) -> Literal["suggest_projection", "run_sql"]:
         bound = state.get("bound")
-        return "run_sql" if bound and bound.feasibility.can_answer else "clarify"
+        if bound and bound.feasibility.can_answer:
+            return "run_sql"
+        return "suggest_projection"
 
     graph = (
         StateGraph(ConversationState)
         .add_node("extract", extract)
         .add_node("bind", bind)
+        .add_node("suggest_projection", suggest_projection)
         .add_node("clarify", clarify)
         .add_node("run_sql", run_sql)
         .add_node("finalize", finalize)
         .add_edge(START, "extract")
         .add_conditional_edges("extract", route_after_extract, ["clarify", "bind"])
-        .add_conditional_edges("bind", route_after_bind, ["clarify", "run_sql"])
+        .add_conditional_edges(
+            "bind", route_after_bind, ["suggest_projection", "run_sql"]
+        )
+        .add_edge("suggest_projection", "clarify")
         .add_edge("run_sql", "finalize")
         .add_edge("finalize", END)
     )

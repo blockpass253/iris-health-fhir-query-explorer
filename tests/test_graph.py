@@ -12,6 +12,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 import app.runtime.graph as graph_mod
+from app.runtime.diagnosis import GapDiagnosis, ProjectionSuggestion
 from app.runtime.graph import build_query_graph
 from app.runtime.models import BoundPlan, Feasibility, QueryPlan
 from app.runtime.sql_generation import SqlQuery
@@ -111,22 +112,96 @@ async def test_clarification_interrupts_then_resumes(monkeypatch, registry):
     assert calls["n"] == 2
 
 
+def _infeasible_bound() -> BoundPlan:
+    return BoundPlan(
+        intent="list",
+        feasibility=Feasibility(can_answer=False, missing=["no such resource"]),
+    )
+
+
 async def test_infeasible_binding_triggers_clarification(monkeypatch, registry):
     async def fake_extract(history):
         return QueryPlan(intent="list", resources=["Patient"])
 
     async def fake_bind(plan, reg):
-        return BoundPlan(
-            intent="list",
-            feasibility=Feasibility(can_answer=False, missing=["no such resource"]),
-        )
+        return _infeasible_bound()
+
+    async def fake_diagnose(plan, bound, view, history):
+        return GapDiagnosis()
 
     monkeypatch.setattr(graph_mod, "extract_plan", fake_extract)
     monkeypatch.setattr(graph_mod, "bind_plan", fake_bind)
+    monkeypatch.setattr(graph_mod, "diagnose_gap", fake_diagnose)
 
     graph = build_query_graph(registry)
     paused = await graph.ainvoke(
         {"messages": [{"role": "user", "content": "show aliens"}]}, _config()
     )
 
-    assert paused["__interrupt__"][0].value["missing"] == ["no such resource"]
+    value = paused["__interrupt__"][0].value
+    assert value["missing"] == ["no such resource"]
+    # No suggestions -> fall back to the plain rephrase prompt.
+    assert value["suggestions"] == []
+    assert "rephrase or narrow it" in value["question"]
+
+
+async def test_infeasible_binding_surfaces_projection_suggestions(
+    monkeypatch, registry
+):
+    async def fake_extract(history):
+        return QueryPlan(intent="list", resources=["Patient"])
+
+    async def fake_bind(plan, reg):
+        return _infeasible_bound()
+
+    async def fake_diagnose(plan, bound, view, history):
+        return GapDiagnosis(
+            suggestions=[
+                ProjectionSuggestion(
+                    missing="no such resource",
+                    resource="Encounter",
+                    field="Encounter.period.start",
+                    rationale="Needed to filter encounters by date.",
+                )
+            ]
+        )
+
+    monkeypatch.setattr(graph_mod, "extract_plan", fake_extract)
+    monkeypatch.setattr(graph_mod, "bind_plan", fake_bind)
+    monkeypatch.setattr(graph_mod, "diagnose_gap", fake_diagnose)
+
+    graph = build_query_graph(registry)
+    paused = await graph.ainvoke(
+        {"messages": [{"role": "user", "content": "show encounters"}]}, _config()
+    )
+
+    value = paused["__interrupt__"][0].value
+    assert value["suggestions"][0]["field"] == "Encounter.period.start"
+    # The enriched question names the suggested resource/field.
+    assert "Encounter" in value["question"]
+    assert "extending your FHIR projection" in value["question"]
+
+
+async def test_diagnosis_failure_degrades_gracefully(monkeypatch, registry):
+    async def fake_extract(history):
+        return QueryPlan(intent="list", resources=["Patient"])
+
+    async def fake_bind(plan, reg):
+        return _infeasible_bound()
+
+    async def boom(plan, bound, view, history):
+        raise RuntimeError("LLM down")
+
+    monkeypatch.setattr(graph_mod, "extract_plan", fake_extract)
+    monkeypatch.setattr(graph_mod, "bind_plan", fake_bind)
+    monkeypatch.setattr(graph_mod, "diagnose_gap", boom)
+
+    graph = build_query_graph(registry)
+    paused = await graph.ainvoke(
+        {"messages": [{"role": "user", "content": "show aliens"}]}, _config()
+    )
+
+    # Diagnosis errors are swallowed; the plain clarification still appears.
+    value = paused["__interrupt__"][0].value
+    assert value["suggestions"] == []
+    assert "rephrase or narrow it" in value["question"]

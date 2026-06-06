@@ -201,7 +201,7 @@ class IrisTUI(App):
                 self._awaiting_clarification = True
                 turn.tracker.waiting()
                 await turn.show_clarification(interrupt_value["question"])
-                record_output(f"? {interrupt_value['question']}")
+                record_output(interrupt_value["question"])
                 return
 
             state = graph.get_state(config).values

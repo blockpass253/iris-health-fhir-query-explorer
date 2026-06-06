@@ -14,6 +14,7 @@ from app.commands.index_schema import format_summary, run_index_schema
 from app.commands.query import (
     format_bound,
     format_extracted,
+    format_projection_suggestions,
     format_results,
     format_sql,
     run_query_plan,
@@ -62,6 +63,8 @@ def query(
     except InfeasibleQuery as exc:
         console.print(format_extracted(exc.query_plan))
         console.print(format_bound(exc.bound))
+        if exc.suggestions:
+            console.print(format_projection_suggestions(exc.suggestions))
         return
     console.print(format_extracted(result.plan))
     console.print(format_bound(result.bound))

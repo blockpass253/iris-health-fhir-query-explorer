@@ -226,9 +226,9 @@ class QueryTurn(Collapsible):
 
     async def show_clarification(self, question: str) -> None:
         await self._contents().mount(
-            Static(Text(f"? {question}", style="magenta"), classes="clarify")
+            Static(Text(question, style="magenta"), classes="clarify")
         )
-        self.title = f"? Q: {self._question}"
+        self.title = f"Q: {self._question}"
 
     async def show_error(self, error: str) -> None:
         await self._contents().mount(
