@@ -25,7 +25,7 @@ from app.commands.query import (
 )
 from app.runtime.grounding import build_schema_view
 from app.runtime.models import BoundPlan, QueryPlan
-from app.runtime.sql_generation import SqlQuery
+from app.runtime.sql_generation import SqlQuery, render_sql
 from app.schema.models.registry import SchemaRegistry
 
 
@@ -102,24 +102,21 @@ class SqlPanel(Vertical):
 
     def __init__(self, sql: SqlQuery) -> None:
         super().__init__(classes="sql-panel")
-        self._sql = sql
+        self._display_sql = render_sql(sql)
         self.border_title = "Generated SQL"
 
     def compose(self) -> ComposeResult:
         yield Static(
-            Syntax(self._sql.sql, "sql", word_wrap=True, background_color="default"),
+            Syntax(
+                self._display_sql, "sql", word_wrap=True, background_color="default"
+            ),
             classes="sql-code",
         )
-        if self._sql.params:
-            rendered = ", ".join(repr(p) for p in self._sql.params)
-            yield Static(
-                Text(f"params: [{rendered}]", style="dim"), classes="sql-params"
-            )
         yield Button("Copy SQL", id="copy-sql", variant="primary")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "copy-sql":
-            self.app.copy_to_clipboard(self._sql.sql)
+            self.app.copy_to_clipboard(self._display_sql)
             self.app.notify("SQL copied to clipboard")
             event.stop()
 

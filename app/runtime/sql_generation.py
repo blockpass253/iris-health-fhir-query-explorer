@@ -84,6 +84,34 @@ class SqlQuery:
     params: list[Any]
 
 
+def _sql_literal(value: Any) -> str:
+    """Format a parameter value as an IRIS SQL literal for display."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    escaped = str(value).replace("'", "''")
+    return f"'{escaped}'"
+
+
+def render_sql(sql: SqlQuery) -> str:
+    """Return SQL with ``?`` placeholders replaced by literal values for display."""
+    if not sql.params:
+        return sql.sql
+    parts = sql.sql.split("?")
+    if len(parts) - 1 != len(sql.params):
+        msg = f"expected {len(parts) - 1} params, got {len(sql.params)}"
+        raise ValueError(msg)
+    rendered: list[str] = []
+    for index, param in enumerate(sql.params):
+        rendered.append(parts[index])
+        rendered.append(_sql_literal(param))
+    rendered.append(parts[-1])
+    return "".join(rendered)
+
+
 @dataclass
 class _ResourceGroup:
     """Accumulated predicates for one non-Patient resource, reached via EXISTS."""

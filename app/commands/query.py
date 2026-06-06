@@ -26,7 +26,7 @@ from app.logging.setup import get_logger
 from app.runtime.errors import InfeasibleQuery
 from app.runtime.graph import build_query_graph
 from app.runtime.models import BoundPlan, Filter, QueryPlan, TemporalConstraint
-from app.runtime.sql_generation import SqlQuery
+from app.runtime.sql_generation import SqlQuery, render_sql
 from app.schema.persistence.registry_store import DEFAULT_REGISTRY_PATH, load_registry
 
 log = get_logger("query")
@@ -182,12 +182,8 @@ def format_bound(bound: BoundPlan) -> str:
 
 
 def format_sql(sql: SqlQuery) -> str:
-    """Render the generated SQL and its parameters (always shown to the user)."""
-    lines = ["[b]Generated SQL[/]", "", f"[cyan]{sql.sql}[/]"]
-    if sql.params:
-        rendered = ", ".join(repr(p) for p in sql.params)
-        lines += ["", f"[dim]params: [{rendered}][/]"]
-    return "\n".join(lines)
+    """Render the generated SQL with parameters inlined (always shown to the user)."""
+    return "\n".join(["[b]Generated SQL[/]", "", f"[cyan]{render_sql(sql)}[/]"])
 
 
 def _cell(value: Any) -> str:

@@ -22,7 +22,7 @@ from app.runtime.models import (
     Filter,
     TemporalConstraint,
 )
-from app.runtime.sql_generation import generate_sql
+from app.runtime.sql_generation import SqlQuery, generate_sql, render_sql
 
 # --- Column lookups ----------------------------------------------------------
 
@@ -231,3 +231,41 @@ def test_generation_uses_renamed_physical_columns(registry):
 
     assert 'p."Sex" = ?' in sql.sql
     assert 'r0c."Cd" = ?' in sql.sql
+
+
+# --- render_sql --------------------------------------------------------------
+
+
+def test_render_sql_without_params():
+    sql = SqlQuery("SELECT 1", [])
+    assert render_sql(sql) == "SELECT 1"
+
+
+def test_render_sql_inlines_string_param():
+    sql = SqlQuery('SELECT * FROM t WHERE "Gender" = ?', ["female"])
+    assert render_sql(sql) == "SELECT * FROM t WHERE \"Gender\" = 'female'"
+
+
+def test_render_sql_inlines_system_code_pair():
+    sql = SqlQuery(
+        'WHERE (c."System" = ? AND c."Code" = ?)',
+        ["http://loinc.org", "4548-4"],
+    )
+    assert render_sql(sql) == (
+        "WHERE (c.\"System\" = 'http://loinc.org' AND c.\"Code\" = '4548-4')"
+    )
+
+
+def test_render_sql_escapes_single_quotes():
+    sql = SqlQuery("WHERE name = ?", ["O'Brien"])
+    assert render_sql(sql) == "WHERE name = 'O''Brien'"
+
+
+def test_render_sql_rejects_param_count_mismatch():
+    sql = SqlQuery("WHERE a = ? AND b = ?", ["only-one"])
+    try:
+        render_sql(sql)
+    except ValueError as exc:
+        assert "expected 2 params, got 1" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
