@@ -2,28 +2,44 @@
 
 Single source of truth shared by the Typer CLI and the Textual TUI. Loads the
 indexed registry, runs LLM extraction (question -> ungrounded plan), then LLM
-binding (plan -> schema-grounded plan with a feasibility verdict), and returns
-both plus human-readable summaries. The pipeline stops at the grounded plan; no
-SQL is generated or executed here. When the schema cannot fully answer the
-question, :class:`InfeasibleQuery` is raised carrying both plans for rendering.
+binding (plan -> schema-grounded plan with a feasibility verdict), then
+deterministically generates SQL and executes it against IRIS, returning the
+plans, the generated SQL and the result rows. When the schema cannot fully
+answer the question, :class:`InfeasibleQuery` is raised carrying both plans for
+rendering (no SQL is generated in that case).
 """
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from app.iris import run_query
 from app.logging.setup import get_logger
 from app.runtime.binding import bind_plan
 from app.runtime.errors import InfeasibleQuery
 from app.runtime.extraction import extract_plan
 from app.runtime.models import BoundPlan, Filter, QueryPlan, TemporalConstraint
+from app.runtime.sql_generation import SqlQuery, generate_sql
 from app.schema.persistence.registry_store import DEFAULT_REGISTRY_PATH, load_registry
 
 log = get_logger("query")
 
 
+@dataclass
+class QueryResult:
+    """The full outcome of a runtime query: plans, generated SQL, and rows."""
+
+    plan: QueryPlan
+    bound: BoundPlan
+    sql: SqlQuery | None = None
+    rows: list[dict[str, Any]] | int | None = None
+    error: str | None = None
+
+
 async def run_query_plan(
     query: str, registry_path: Path = DEFAULT_REGISTRY_PATH
-) -> tuple[QueryPlan, BoundPlan]:
-    """Extract a plan, bind it to the indexed schema, and gate on feasibility."""
+) -> QueryResult:
+    """Extract, bind, gate on feasibility, then generate and execute SQL."""
     if not registry_path.exists():
         raise FileNotFoundError(
             f"No semantic registry at {registry_path}. "
@@ -41,7 +57,18 @@ async def run_query_plan(
         raise InfeasibleQuery(bound.feasibility.missing, query_plan=plan, bound=bound)
 
     log.info("query.bound", tables=bound.resource_tables)
-    return plan, bound
+
+    sql = generate_sql(bound, registry)
+    log.info("query.sql", params=sql.params)
+
+    result = QueryResult(plan=plan, bound=bound, sql=sql)
+    try:
+        result.rows = run_query(sql.sql, sql.params)
+        log.info("query.executed")
+    except Exception as exc:  # keep the SQL visible; surface the failure
+        result.error = str(exc)
+        log.warning("query.execute_failed", error=str(exc))
+    return result
 
 
 # --- Rendering ---------------------------------------------------------------
@@ -135,4 +162,37 @@ def format_bound(bound: BoundPlan) -> str:
         lines.append("[red]✗ Cannot fully answer — missing:[/]")
         lines.extend(f"  [red]- {m}[/]" for m in bound.feasibility.missing)
 
+    return "\n".join(lines)
+
+
+def format_sql(sql: SqlQuery) -> str:
+    """Render the generated SQL and its parameters (always shown to the user)."""
+    lines = ["[b]Generated SQL[/]", "", f"[cyan]{sql.sql}[/]"]
+    if sql.params:
+        rendered = ", ".join(repr(p) for p in sql.params)
+        lines += ["", f"[dim]params: [{rendered}][/]"]
+    return "\n".join(lines)
+
+
+def format_results(result: QueryResult, intent: str, max_rows: int = 20) -> str:
+    """Render execution results: a count, a row preview, or an execution error."""
+    if result.error is not None:
+        return f"[red]Execution failed:[/] {result.error}"
+
+    rows = result.rows
+    if isinstance(rows, int):  # non-SELECT rowcount (not expected for queries)
+        return f"[b]Result[/]\n{rows} rows affected"
+    if rows is None:
+        return "[dim]Not executed.[/]"
+
+    if intent == "count":
+        value = next(iter(rows[0].values())) if rows else 0
+        return f"[b]Result[/]\nCount: [green]{value}[/]"
+
+    lines = [f"[b]Results[/] [dim]({len(rows)} row(s))[/]"]
+    for row in rows[:max_rows]:
+        cells = ", ".join(f"{k}={v}" for k, v in row.items())
+        lines.append(f"- {cells}")
+    if len(rows) > max_rows:
+        lines.append(f"[dim]… {len(rows) - max_rows} more[/]")
     return "\n".join(lines)

@@ -139,7 +139,9 @@ def resolve_bound_plan(
         if f.concept and not codings:
             missing.append(f"concept '{f.concept}' is not in the coding dictionary")
             continue
-        if f.path and not f.concept and column_path is None:
+        # 'age' has no FHIR column; SQL generation derives it from birthDate.
+        is_age = not f.concept and _norm(f.path) == "age"
+        if f.path and not f.concept and column_path is None and not is_age:
             missing.append(f"attribute '{f.path}' was not found on {table}")
             continue
         bound_filters.append(

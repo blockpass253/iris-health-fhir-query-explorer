@@ -2,10 +2,12 @@
 
 ### Design principles
 
-- No arbitrary LLM-generated SQL — SQL generation stays deterministic and inspectable.
+- SQL is LLM-generated, but always shown to the user — transparency over a hidden black box.
+- LLM proposals are grounded against the indexed schema: extraction and binding are
+  deterministically validated so the model selects real tables/paths/codes rather than inventing them.
 - No autonomous agents.
 - Prioritize explainability, transparency, and demo reliability over breadth.
-- Keep semantic interpretation and SQL generation cleanly separated.
+- Keep semantic interpretation and schema grounding cleanly separated from SQL generation.
 
 ## Stack
 
@@ -15,7 +17,6 @@
 - Pydantic v2 — typed query-plan models
 - Typer + Textual + Rich — CLI and interactive analytics TUI
 - structlog — structured logging for the indexing pipeline
-- SQLGlot — deterministic SQL building *(planned)*
 
 ## Current state
 

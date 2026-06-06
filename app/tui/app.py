@@ -10,7 +10,13 @@ from textual.app import App, ComposeResult
 from textual.widgets import Footer, Header, Input, RichLog
 
 from app.commands.index_schema import format_summary, run_index_schema
-from app.commands.query import format_bound, format_extracted, run_query_plan
+from app.commands.query import (
+    format_bound,
+    format_extracted,
+    format_results,
+    format_sql,
+    run_query_plan,
+)
 from app.debug.dump import record_output, start_message
 from app.runtime.errors import InfeasibleQuery
 
@@ -85,10 +91,14 @@ class IrisTUI(App):
     async def _run_query(self, question: str) -> None:
         self._log("[yellow]Extracting plan...[/]")
         try:
-            plan, bound = await run_query_plan(question)
-            self._log(format_extracted(plan))
+            result = await run_query_plan(question)
+            self._log(format_extracted(result.plan))
             self._log("[yellow]Grounding to schema...[/]")
-            self._log(format_bound(bound))
+            self._log(format_bound(result.bound))
+            if result.sql is not None:
+                self._log("[yellow]Generating & running SQL...[/]")
+                self._log(format_sql(result.sql))
+                self._log(format_results(result, result.bound.intent))
         except InfeasibleQuery as exc:  # expected: schema can't answer
             self._log(format_extracted(exc.query_plan))
             self._log(format_bound(exc.bound))

@@ -77,6 +77,17 @@ def configure_logging(level: int = logging.INFO) -> None:
     _configured = True
 
 
+def silence_stream_logging() -> None:
+    """Drop the terminal stream handler so logs don't corrupt a full-screen UI.
+
+    The file handler (``debug/app.log``) is kept, so logs stay inspectable during
+    a TUI session via ``tail -f debug/app.log``.
+    """
+    configure_logging()  # ensure handlers exist before stripping
+    root = logging.getLogger()
+    root.handlers = [h for h in root.handlers if isinstance(h, logging.FileHandler)]
+
+
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
     """Return a configured structlog logger."""
     configure_logging()
