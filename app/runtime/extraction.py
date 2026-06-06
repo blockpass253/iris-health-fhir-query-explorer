@@ -59,6 +59,7 @@ async def extract_plan(query: str) -> QueryPlan:
         model=settings.model,
         input=messages,
         text_format=QueryPlan,
+        reasoning={"effort": settings.reasoning_effort},
     )
     parsed = response.output_parsed or QueryPlan()
     log.info(

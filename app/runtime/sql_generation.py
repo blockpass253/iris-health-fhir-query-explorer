@@ -22,12 +22,13 @@ from datetime import date, timedelta
 from typing import Any
 
 from app.runtime.grounding import (
+    ColumnRef,
     coding_child,
     find_column,
     patient_reference_column,
     resolve_column_path,
 )
-from app.runtime.models import BoundFilter, BoundPlan, BoundTemporal
+from app.runtime.models import BoundFilter, BoundPlan, BoundTemporal, Filter
 from app.schema.models.registry import SchemaRegistry, SemanticType, TableMetadata
 
 # FHIR SQL Builder projects each resource's row id as ``ID`` (the column that
@@ -37,6 +38,42 @@ _ID_COLUMN = "ID"
 _RESULT_LIMIT = 50
 
 _OPERATORS = {">", ">=", "<", "<=", "=", "!="}
+
+_TRUE_VALUES = {"true", "yes"}
+_FALSE_VALUES = {"false", "no"}
+
+
+def _as_bool(value: Any) -> bool | None:
+    """Interpret a filter value as a boolean, or ``None`` if it isn't one.
+
+    Restricted to actual booleans and the true/false-ish strings the extractor
+    emits — numeric 0/1 is intentionally excluded so genuine numeric filters are
+    never mistaken for presence tests.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in _TRUE_VALUES:
+            return True
+        if lowered in _FALSE_VALUES:
+            return False
+    return None
+
+
+def _presence_test(flt: Filter, col: ColumnRef) -> bool | None:
+    """Whether a boolean filter on a non-boolean column tests element presence."""
+    if col.semantic_type == SemanticType.BOOLEAN:
+        return None
+    truthy = _as_bool(flt.value)
+    if truthy is None:
+        return None
+    op = flt.operator or "="
+    if op == "=":
+        return truthy
+    if op == "!=":
+        return not truthy
+    return None
 
 
 @dataclass
@@ -130,14 +167,25 @@ def _apply_filter(
     col = resolve_column_path(registry, bf.table, bf.column_path)
     if col is None:
         return
-    op = flt.operator if flt.operator in _OPERATORS else "="
+
+    # Presence semantics: a boolean compared against a non-boolean polymorphic
+    # column tests for the element's presence, not a literal value.
+    present = _presence_test(flt, col)
+    if present is not None:
+        predicate, param = f"IS {'NOT NULL' if present else 'NULL'}", None
+    else:
+        op = flt.operator if flt.operator in _OPERATORS else "="
+        predicate, param = f"{op} ?", flt.value
+
     if is_patient:
-        patient_preds.append(f'p."{col.column}" {op} ?')
-        params.append(flt.value)
+        patient_preds.append(f'p."{col.column}" {predicate}')
+        if param is not None:
+            params.append(param)
     else:
         group = group_for(bf.table)
-        group.predicates.append(f'{group.alias}."{col.column}" {op} ?')
-        group.params.append(flt.value)
+        group.predicates.append(f'{group.alias}."{col.column}" {predicate}')
+        if param is not None:
+            group.params.append(param)
 
 
 def _apply_temporal(

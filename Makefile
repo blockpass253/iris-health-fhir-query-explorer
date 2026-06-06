@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install run tui lint format typecheck test check precommit clean
+.PHONY: help install run tui lint fix-lint format typecheck test check precommit clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -17,6 +17,10 @@ tui: ## Launch the interactive Textual TUI
 
 lint: ## Lint with ruff
 	uv run ruff check .
+
+fix-lint: ## Auto-fix ruff lint issues and format
+	uv run ruff check --fix .
+	uv run ruff format .
 
 format: ## Format with ruff
 	uv run ruff format .

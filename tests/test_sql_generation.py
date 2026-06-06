@@ -101,6 +101,56 @@ def test_patient_attribute_filter(registry):
     assert sql.params == ["female"]
 
 
+def test_alive_filter_emits_null_presence_check(registry):
+    # "alive" -> deceased=false on the polymorphic deceasedDateTime column means
+    # the death datetime IS NULL, not a literal '= false' comparison.
+    bound = BoundPlan(
+        intent="list",
+        resource_tables={"Patient": "Patient"},
+        filters=[
+            BoundFilter(
+                filter=Filter(
+                    resource="Patient",
+                    path="deceased",
+                    operator="=",
+                    value="false",
+                ),
+                table="Patient",
+                column_path="Patient.deceasedDateTime",
+            )
+        ],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert 'p."DeceasedDateTime" IS NULL' in sql.sql
+    assert sql.params == []
+
+
+def test_deceased_filter_emits_not_null_presence_check(registry):
+    bound = BoundPlan(
+        intent="list",
+        resource_tables={"Patient": "Patient"},
+        filters=[
+            BoundFilter(
+                filter=Filter(
+                    resource="Patient",
+                    path="deceased",
+                    operator="=",
+                    value="true",
+                ),
+                table="Patient",
+                column_path="Patient.deceasedDateTime",
+            )
+        ],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert 'p."DeceasedDateTime" IS NOT NULL' in sql.sql
+    assert sql.params == []
+
+
 def test_age_filter_uses_birthdate_threshold(registry):
     bound = BoundPlan(
         intent="list",

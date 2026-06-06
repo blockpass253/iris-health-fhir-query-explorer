@@ -35,18 +35,37 @@ _SYSTEM_PROMPT = (
     "You are given the plan (generic resources, semantic filters, time windows) "
     "and a JSON schema view: each real resource has a table 'name', sample FHIR "
     "'paths', 'date_paths', and observed 'coding_systems'. Bind ONLY to names that "
-    "appear in the schema view; never invent tables or paths.\n"
+    "appear in the schema view: every column_path you output must be copied "
+    "verbatim from that table's 'paths'. 'Never invent' means pick from the paths "
+    "shown — it does NOT mean the plan's attribute name must appear verbatim.\n"
     "Return:\n"
     "- resource_bindings: for each plan resource, {resource, table} where table is "
     "the matching real table name, or null if none fits.\n"
     "- filter_bindings: for each plan filter, {resource, concept?, path?, table, "
     "column_path?} echoing the filter's resource/concept/path and adding the real "
     "table and, when the filter targets a direct attribute, the concrete FHIR "
-    "path from that table's 'paths'. For concept filters (coded clinical "
-    "meanings) leave column_path null.\n"
+    "path from that table's 'paths'. Choose the path that represents the SAME FHIR "
+    "element as the plan's attribute, even when the projected path adds a type "
+    "suffix, differs in case, or carries qualifiers. FHIR polymorphic '[x]' "
+    "elements project with the type appended (e.g. deceased -> deceasedDateTime, "
+    "value -> valueQuantity, multipleBirth -> multipleBirthBoolean, "
+    "onset -> onsetDateTime). Only leave column_path null when NO path on the "
+    "table plausibly represents the attribute. For concept filters (coded "
+    "clinical meanings) always leave column_path null.\n"
     "- temporal_bindings: for each time window, {resource, table, column_path} "
     "choosing a date field from that table's 'date_paths'.\n"
-    "Leave table/column_path null when nothing in the schema fits — do not guess."
+    "Leave table/column_path null when nothing in the schema fits — do not guess.\n"
+    "Examples (filter -> chosen column_path, given the table's paths):\n"
+    "1. {Patient, path: gender}; paths include 'Patient.gender' -> "
+    "column_path='Patient.gender' (exact direct attribute).\n"
+    "2. {Patient, path: deceased}; paths include 'Patient.deceasedDateTime' -> "
+    "column_path='Patient.deceasedDateTime' (polymorphic '[x]', type suffix).\n"
+    "3. {Observation, path: value}; paths include 'Observation.valueQuantity.value' "
+    "-> column_path='Observation.valueQuantity.value' (polymorphic, generalizes "
+    "beyond deceased).\n"
+    "4. {Condition, concept: diabetes} -> column_path=null (coded concept).\n"
+    "5. {Patient, path: maritalStatus}; no plausible path on Patient -> "
+    "column_path=null (attribute genuinely absent — abstain)."
 )
 
 
@@ -194,6 +213,7 @@ async def bind_plan(plan: QueryPlan, registry: SchemaRegistry) -> BoundPlan:
         model=settings.model,
         input=messages,
         text_format=BindingDraft,
+        reasoning={"effort": settings.reasoning_effort},
     )
     draft = response.output_parsed or BindingDraft()
     record_llm("binding", settings.model, messages, draft, raw=response)

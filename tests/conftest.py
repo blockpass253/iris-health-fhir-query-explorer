@@ -32,6 +32,7 @@ _COLUMNS = [
     _col("Patient", "ID", "bigint"),
     _col("Patient", "BirthDate", "varchar", "Path: Patient.birthDate"),
     _col("Patient", "Gender", "varchar", "Path: Patient.gender"),
+    _col("Patient", "DeceasedDateTime", "varchar", "Path: Patient.deceasedDateTime"),
     _col("Condition", "ID", "bigint"),
     _col("Condition", "Patient", "varchar", "Path: Condition.subject.reference"),
     _col("Condition", "Encounter", "varchar", "Path: Condition.encounter.reference"),

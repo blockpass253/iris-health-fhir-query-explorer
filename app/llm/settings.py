@@ -6,8 +6,13 @@ SDK's conventional key name, so it is picked up here too.
 """
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Reasoning effort levels accepted by the Responses API for reasoning models.
+# Higher effort improves accuracy on ambiguous questions at the cost of latency.
+ReasoningEffort = Literal["minimal", "low", "medium", "high"]
 
 
 class LLMSettings(BaseSettings):
@@ -15,6 +20,9 @@ class LLMSettings(BaseSettings):
 
     api_key: str | None = None
     model: str = "gpt-5.4-nano"
+    # The model's own default effort is "none"; bump it so extraction/binding
+    # actually reason about ambiguous phrasing. Override via OPENAI_REASONING_EFFORT.
+    reasoning_effort: ReasoningEffort = "medium"
 
     model_config = SettingsConfigDict(
         env_prefix="OPENAI_",

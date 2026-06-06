@@ -56,6 +56,38 @@ def test_fully_groundable_plan_is_answerable(registry):
     assert any(c.code == "E11" for c in diabetes.codings)
 
 
+def test_polymorphic_attribute_binds_to_projected_path(registry):
+    # The extractor emits the abstract FHIR element name ("deceased"); the
+    # projection exposes it with a type suffix ("Patient.deceasedDateTime").
+    # A draft that maps to the real projected path must ground.
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="list",
+        resources=["Patient"],
+        filters=[
+            Filter(resource="Patient", path="deceased", operator="=", value="false")
+        ],
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Patient", table="Patient")],
+        filter_bindings=[
+            FilterBinding(
+                resource="Patient",
+                path="deceased",
+                table="Patient",
+                column_path="Patient.deceasedDateTime",
+            )
+        ],
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert bound.feasibility.can_answer
+    assert bound.feasibility.missing == []
+    deceased = next(f for f in bound.filters if f.filter.path == "deceased")
+    assert deceased.column_path == "Patient.deceasedDateTime"
+
+
 def test_missing_resource_is_infeasible(registry):
     view = build_schema_view(registry)
     plan = QueryPlan(
