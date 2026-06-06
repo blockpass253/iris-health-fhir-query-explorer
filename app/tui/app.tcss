@@ -1,0 +1,104 @@
+/* Layout: a horizontal body (transcript + sidebar) between the input and footer. */
+
+#body {
+    height: 1fr;
+}
+
+#transcript {
+    width: 1fr;
+    padding: 0 1;
+}
+
+#sidebar {
+    width: 40;
+    border-left: round $primary;
+    padding: 0 1;
+}
+
+.notice {
+    color: $text-muted;
+    padding: 0 1;
+}
+
+.ctx-head {
+    text-style: bold;
+    color: $accent;
+    margin-top: 1;
+}
+
+QueryTurn {
+    margin: 1 0;
+}
+
+/* Step tracker chips ------------------------------------------------------- */
+
+.steps {
+    height: auto;
+    padding: 0 1;
+}
+
+.step {
+    padding: 0 1;
+    text-style: bold;
+}
+
+.step-arrow {
+    color: $text-muted;
+}
+
+.step.-pending {
+    color: $text-muted;
+}
+
+.step.-active {
+    color: $warning;
+}
+
+.step.-done {
+    color: $success;
+}
+
+.step.-failed {
+    color: $error;
+}
+
+.step.-waiting {
+    color: $accent;
+}
+
+/* Output panels ------------------------------------------------------------ */
+
+.sql-panel {
+    height: auto;
+    border: round $primary;
+    border-title-color: $accent;
+    padding: 0 1;
+    margin: 1 0;
+}
+
+.sql-params {
+    color: $text-muted;
+}
+
+.results-panel {
+    height: auto;
+    border: round $success;
+    border-title-color: $success;
+    padding: 0 1;
+    margin: 1 0;
+}
+
+.results-panel DataTable {
+    height: auto;
+    max-height: 22;
+}
+
+.clarify {
+    color: $secondary;
+    text-style: bold;
+    padding: 1 1;
+}
+
+Button {
+    margin: 1 0;
+}

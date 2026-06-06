@@ -1,9 +1,11 @@
-"""Minimal Textual TUI for the semantic query tool.
+"""Textual TUI for the semantic query tool.
 
-Intentionally unpolished (per current phase constraints): an input line plus a
-log pane. ``/index-schema <schema>`` runs the indexing pipeline; any other
-(non-slash) line is treated as a natural-language clinical question and routed
-through LLM resource selection + semantic graph narrowing.
+A side-panel layout: a persistent context sidebar (indexed schema + the current
+query's grounding) beside a scrolling transcript of conversation turns. Each turn is
+a collapsible card with a step tracker, collapsed plan detail, a highlighted SQL
+panel, and a results table. ``/index-schema <schema>`` runs the indexing pipeline;
+any other (non-slash) line is a natural-language clinical question routed through the
+LangGraph conversation pipeline.
 """
 
 from uuid import uuid4
@@ -12,10 +14,12 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 from rich.console import Console, RenderableType
+from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.widgets import Footer, Header, Input, RichLog
+from textual.containers import Horizontal, VerticalScroll
+from textual.widgets import Footer, Header, Input, Static
 
-from app.commands.index_schema import format_summary, run_index_schema
+from app.commands.index_schema import run_index_schema
 from app.commands.query import (
     format_bound,
     format_extracted,
@@ -26,13 +30,7 @@ from app.commands.query import (
 from app.debug.dump import record_output, start_message
 from app.runtime.graph import build_query_graph
 from app.schema.persistence.registry_store import DEFAULT_REGISTRY_PATH, load_registry
-
-# Per-node progress lines shown while the graph runs.
-_NODE_PROGRESS = {
-    "extract": "[yellow]Extracting plan...[/]",
-    "bind": "[yellow]Grounding to schema...[/]",
-    "run_sql": "[yellow]Generating & running SQL...[/]",
-}
+from app.tui.widgets import ContextPanel, QueryTurn
 
 
 def _to_text(content: RenderableType) -> str:
@@ -47,7 +45,8 @@ class IrisTUI(App):
     """Interactive shell accepting slash commands and natural-language questions."""
 
     TITLE = "IRIS Semantic Query Tool"
-    CSS = "RichLog { border: round $primary; }"
+    CSS_PATH = "app.tcss"
+    BINDINGS = [("ctrl+l", "clear", "Clear")]
 
     def __init__(self) -> None:
         super().__init__()
@@ -57,6 +56,7 @@ class IrisTUI(App):
         self._graph: CompiledStateGraph | None = None
         self._convo_thread_id = str(uuid4())
         self._awaiting_clarification = False
+        self._current_turn: QueryTurn | None = None
 
     def _new_conversation(self) -> None:
         """Start a fresh thread, dropping prior conversation memory."""
@@ -68,33 +68,43 @@ class IrisTUI(App):
         if self._graph is not None:
             return True
         if not DEFAULT_REGISTRY_PATH.exists():
-            self._log(
+            self._notice(
                 "[red]No indexed schema yet. Run "
                 "[bold]/index-schema TEST1 --namespace FHIRSERVER[/] first.[/]"
             )
             return False
-        self._graph = build_query_graph(load_registry(DEFAULT_REGISTRY_PATH))
+        registry = load_registry(DEFAULT_REGISTRY_PATH)
+        self._graph = build_query_graph(registry)
+        self.query_one(ContextPanel).update_schema(registry)
         return True
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield RichLog(highlight=True, markup=True, wrap=True)
+        with Horizontal(id="body"):
+            yield VerticalScroll(id="transcript")
+            yield ContextPanel(id="sidebar")
         yield Input(
             placeholder="Ask a question, or /index-schema TEST1 --namespace FHIRSERVER"
         )
         yield Footer()
 
-    def _log(self, content: RenderableType) -> None:
-        """Write to the log pane and mirror it to the debug output file."""
-        self.query_one(RichLog).write(content)
-        record_output(content if isinstance(content, str) else _to_text(content))
+    def _notice(self, markup: str) -> None:
+        """Mount a one-line system message into the transcript (and mirror to debug)."""
+        self.query_one("#transcript", VerticalScroll).mount(
+            Static(Text.from_markup(markup), classes="notice")
+        )
+        record_output(markup)
 
     def on_mount(self) -> None:
-        self._log(
+        self._notice(
             "Ask a clinical question (e.g. [bold]Show diabetic patients with recent "
             "encounters[/]), or index a schema with "
             "[bold]/index-schema TEST1 --namespace FHIRSERVER[/]."
         )
+        if DEFAULT_REGISTRY_PATH.exists():
+            self.query_one(ContextPanel).update_schema(
+                load_registry(DEFAULT_REGISTRY_PATH)
+            )
         self.query_one(Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -104,7 +114,6 @@ class IrisTUI(App):
             return
         # Reset the per-message dump files before any output or LLM call.
         start_message(command)
-        self._log(f"[dim]> {command}[/]")
         # Slash commands are only dispatched when not mid-clarification, so a
         # reply like "/clear" during a pause still reads naturally as an answer.
         if command.startswith("/") and not self._awaiting_clarification:
@@ -112,17 +121,27 @@ class IrisTUI(App):
         else:
             self.run_worker(self._run_query(command), exclusive=True)
 
+    def action_clear(self) -> None:
+        self._clear()
+
+    def _clear(self) -> None:
+        self.query_one("#transcript", VerticalScroll).remove_children()
+        self.query_one(ContextPanel).reset_query()
+        self._current_turn = None
+        self._new_conversation()  # clearing the screen also resets memory
+
     def _dispatch(self, command: str) -> None:
         if command == "/clear":
-            self.query_one(RichLog).clear()
-            self._new_conversation()  # clearing the screen also resets memory
+            self._clear()
             return
         if not command.startswith("/index-schema"):
-            self._log("[red]Unknown command. Try /index-schema <schema> or /clear.[/]")
+            self._notice(
+                "[red]Unknown command. Try /index-schema <schema> or /clear.[/]"
+            )
             return
         parts = command.split()
         if len(parts) < 2:
-            self._log("[red]Usage: /index-schema <schema> [--namespace NS][/]")
+            self._notice("[red]Usage: /index-schema <schema> [--namespace NS][/]")
             return
         schema = parts[1]
         namespace = None
@@ -133,21 +152,32 @@ class IrisTUI(App):
         self._run_index(schema, namespace)
 
     def _run_index(self, schema: str, namespace: str | None) -> None:
-        self._log(f"[yellow]Indexing {schema}...[/]")
+        self._notice(f"[yellow]Indexing {schema}…[/]")
         try:
             registry = run_index_schema(schema, namespace=namespace)
-            self._log(format_summary(registry))
             # New schema → rebuild the graph and start a fresh conversation.
             self._graph = build_query_graph(registry)
             self._new_conversation()
+            self.query_one(ContextPanel).update_schema(registry)
+            self._notice(f"[green]Indexed {registry.schema_name} ✓[/]")
         except Exception as exc:  # surfaced to the user, not swallowed
-            self._log(f"[red]Indexing failed: {exc}[/]")
+            self._notice(f"[red]Indexing failed: {exc}[/]")
 
     async def _run_query(self, message: str) -> None:
         if not self._ensure_graph():
             return
         graph = self._graph
         assert graph is not None  # guaranteed by _ensure_graph
+
+        transcript = self.query_one("#transcript", VerticalScroll)
+        if self._current_turn is not None:  # collapse the prior turn to reduce scroll
+            self._current_turn.collapsed = True
+        turn = QueryTurn(message)
+        await transcript.mount(turn)
+        self._current_turn = turn
+        turn.scroll_visible()
+        turn.tracker.start()
+
         # A reply to a pending clarification resumes the paused graph; otherwise
         # it's a new turn appended to the conversation.
         payload: Command | dict
@@ -165,20 +195,26 @@ class IrisTUI(App):
                     interrupt_value = chunk["__interrupt__"][0].value
                     continue
                 for node in chunk:
-                    if node in _NODE_PROGRESS:
-                        self._log(_NODE_PROGRESS[node])
+                    turn.tracker.advance(node)
 
             if interrupt_value is not None:
                 self._awaiting_clarification = True
-                self._log(f"[magenta]? {interrupt_value['question']}[/]")
+                turn.tracker.waiting()
+                await turn.show_clarification(interrupt_value["question"])
+                record_output(f"? {interrupt_value['question']}")
                 return
 
             state = graph.get_state(config).values
             result = result_from_state(state)
-            self._log(format_extracted(result.plan))
-            self._log(format_bound(result.bound))
+            await turn.populate(result.plan, result.bound, result.sql, result)
+            self.query_one(ContextPanel).update_query(result.plan, result.bound)
+            # Mirror the rendered output to debug/output.md for parity.
+            record_output(format_extracted(result.plan))
+            record_output(format_bound(result.bound))
             if result.sql is not None:
-                self._log(format_sql(result.sql))
-                self._log(format_results(result, result.bound.intent))
+                record_output(format_sql(result.sql))
+                record_output(_to_text(format_results(result, result.bound.intent)))
         except Exception as exc:  # surfaced to the user, not swallowed
-            self._log(f"[red]Query planning failed: {exc}[/]")
+            turn.tracker.fail()
+            await turn.show_error(str(exc))
+            record_output(f"Query planning failed: {exc}")
