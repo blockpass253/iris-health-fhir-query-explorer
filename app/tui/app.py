@@ -30,7 +30,7 @@ from app.commands.query import (
 from app.debug.dump import record_output, start_message
 from app.runtime.graph import build_query_graph
 from app.schema.persistence.registry_store import DEFAULT_REGISTRY_PATH, load_registry
-from app.tui.widgets import ContextPanel, QueryTurn
+from app.tui.widgets import ClarificationPanel, ContextPanel, QueryTurn
 
 
 def _to_text(content: RenderableType) -> str:
@@ -57,6 +57,7 @@ class IrisTUI(App):
         self._convo_thread_id = str(uuid4())
         self._awaiting_clarification = False
         self._current_turn: QueryTurn | None = None
+        self._clarification_panel: ClarificationPanel | None = None
 
     def _new_conversation(self) -> None:
         """Start a fresh thread, dropping prior conversation memory."""
@@ -112,6 +113,8 @@ class IrisTUI(App):
         event.input.clear()
         if not command:
             return
+        # Any new submission supersedes a pending clarification — drop its panel.
+        self._dismiss_clarification()
         # Reset the per-message dump files before any output or LLM call.
         start_message(command)
         # Slash commands are only dispatched when not mid-clarification, so a
@@ -125,10 +128,17 @@ class IrisTUI(App):
         self._clear()
 
     def _clear(self) -> None:
+        self._dismiss_clarification()
         self.query_one("#transcript", VerticalScroll).remove_children()
         self.query_one(ContextPanel).reset_query()
         self._current_turn = None
         self._new_conversation()  # clearing the screen also resets memory
+
+    def _dismiss_clarification(self) -> None:
+        """Remove the pinned clarification panel, if one is showing."""
+        if self._clarification_panel is not None:
+            self._clarification_panel.remove()
+            self._clarification_panel = None
 
     def _dispatch(self, command: str) -> None:
         if command == "/clear":
@@ -200,7 +210,10 @@ class IrisTUI(App):
             if interrupt_value is not None:
                 self._awaiting_clarification = True
                 turn.tracker.waiting()
-                await turn.show_clarification(interrupt_value["question"])
+
+                panel = ClarificationPanel(interrupt_value)
+                await self.mount(panel, before=self.query_one(Input))
+                self._clarification_panel = panel
                 record_output(interrupt_value["question"])
                 return
 

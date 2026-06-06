@@ -99,6 +99,22 @@ QueryTurn {
     padding: 1 1;
 }
 
+.clarification-panel {
+    height: auto;
+    padding: 1 2;
+    margin: 1 0;
+}
+
+.clarification-panel.-gap {
+    border: heavy $warning;
+    border-title-color: $warning;
+}
+
+.clarification-panel.-ask {
+    border: heavy $accent;
+    border-title-color: $accent;
+}
+
 Button {
     margin: 1 0;
 }

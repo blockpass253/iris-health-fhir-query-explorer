@@ -224,12 +224,6 @@ class QueryTurn(Collapsible):
         badge = "✓" if bound.feasibility.can_answer else "✗"
         self.title = f"{badge} Q: {self._question}"
 
-    async def show_clarification(self, question: str) -> None:
-        await self._contents().mount(
-            Static(Text(question, style="magenta"), classes="clarify")
-        )
-        self.title = f"Q: {self._question}"
-
     async def show_error(self, error: str) -> None:
         await self._contents().mount(
             Static(
@@ -237,6 +231,51 @@ class QueryTurn(Collapsible):
             )
         )
         self.title = f"✗ Q: {self._question}"
+
+
+class ClarificationPanel(Vertical):
+    """A prominent, root-level panel for a pending clarification or schema gap."""
+
+    def __init__(self, interrupt: dict[str, Any]) -> None:
+        self._question: str = interrupt.get("question", "")
+        self._missing: list[str] = interrupt.get("missing") or []
+        self._suggestions: list[dict[str, Any]] = interrupt.get("suggestions") or []
+        self._is_gap = bool(self._missing or self._suggestions)
+        super().__init__(
+            classes="clarification-panel " + ("-gap" if self._is_gap else "-ask")
+        )
+        self.border_title = (
+            "⚠ Can't fully answer from the indexed schema"
+            if self._is_gap
+            else "❓ Need a bit more detail"
+        )
+
+    def compose(self) -> ComposeResult:
+        if not self._is_gap:
+            yield Static(Text(self._question))
+            return
+        if self._missing:
+            yield Static(Text.assemble(("Missing: ", "bold"), "; ".join(self._missing)))
+        if self._suggestions:
+            yield Static(Text("\nExtend your FHIR projection with:", style="bold"))
+            for suggestion in self._suggestions:
+                field = suggestion["field"]
+                label = (
+                    f"{suggestion['resource']}.{field.split('.', 1)[-1]}"
+                    if "." in field
+                    else field
+                )
+                yield Static(
+                    Text.assemble(
+                        "  • ", (label, "bold"), f" — {suggestion['rationale']}"
+                    )
+                )
+        yield Static(
+            Text(
+                "\nRe-index after extending the projection, or rephrase the question.",
+                style="dim",
+            )
+        )
 
 
 class ContextPanel(VerticalScroll):
