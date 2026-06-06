@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from rich.console import RenderableType
+from rich.table import Table
+
 from app.iris import run_query
 from app.logging.setup import get_logger
 from app.runtime.binding import bind_plan
@@ -174,8 +177,15 @@ def format_sql(sql: SqlQuery) -> str:
     return "\n".join(lines)
 
 
-def format_results(result: QueryResult, intent: str, max_rows: int = 20) -> str:
-    """Render execution results: a count, a row preview, or an execution error."""
+def _cell(value: Any) -> str:
+    """Stringify a result cell; nulls render as blank."""
+    return "" if value is None else str(value)
+
+
+def format_results(
+    result: QueryResult, intent: str, max_rows: int = 20
+) -> RenderableType:
+    """Render execution results: a count, a row table, or an execution error."""
     if result.error is not None:
         return f"[red]Execution failed:[/] {result.error}"
 
@@ -189,10 +199,13 @@ def format_results(result: QueryResult, intent: str, max_rows: int = 20) -> str:
         value = next(iter(rows[0].values())) if rows else 0
         return f"[b]Result[/]\nCount: [green]{value}[/]"
 
-    lines = [f"[b]Results[/] [dim]({len(rows)} row(s))[/]"]
+    if not rows:
+        return "[b]Results[/] [dim](0 row(s))[/]"
+
+    caption = f"… {len(rows) - max_rows} more" if len(rows) > max_rows else None
+    table = Table(title=f"Results ({len(rows)} row(s))", caption=caption)
+    for column in rows[0]:
+        table.add_column(column)
     for row in rows[:max_rows]:
-        cells = ", ".join(f"{k}={v}" for k, v in row.items())
-        lines.append(f"- {cells}")
-    if len(rows) > max_rows:
-        lines.append(f"[dim]… {len(rows) - max_rows} more[/]")
-    return "\n".join(lines)
+        table.add_row(*(_cell(row.get(column)) for column in rows[0]))
+    return table

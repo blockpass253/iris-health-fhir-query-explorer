@@ -6,6 +6,7 @@ log pane. ``/index-schema <schema>`` runs the indexing pipeline; any other
 through LLM resource selection + semantic graph narrowing.
 """
 
+from rich.console import Console, RenderableType
 from textual.app import App, ComposeResult
 from textual.widgets import Footer, Header, Input, RichLog
 
@@ -19,6 +20,14 @@ from app.commands.query import (
 )
 from app.debug.dump import record_output, start_message
 from app.runtime.errors import InfeasibleQuery
+
+
+def _to_text(content: RenderableType) -> str:
+    """Render a Rich renderable to plain text for the debug output file."""
+    console = Console()
+    with console.capture() as capture:
+        console.print(content)
+    return capture.get().rstrip("\n")
 
 
 class IrisTUI(App):
@@ -35,10 +44,10 @@ class IrisTUI(App):
         )
         yield Footer()
 
-    def _log(self, text: str) -> None:
+    def _log(self, content: RenderableType) -> None:
         """Write to the log pane and mirror it to the debug output file."""
-        self.query_one(RichLog).write(text)
-        record_output(text)
+        self.query_one(RichLog).write(content)
+        record_output(content if isinstance(content, str) else _to_text(content))
 
     def on_mount(self) -> None:
         self._log(
