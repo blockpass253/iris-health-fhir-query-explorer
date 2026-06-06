@@ -24,6 +24,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+artifacts = ["app/**/*.md"]
 force-include = { "config.py" = "config.py", "iris_client.py" = "iris_client.py" }
 
 [dependency-groups]
