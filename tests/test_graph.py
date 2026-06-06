@@ -110,6 +110,11 @@ async def test_clarification_interrupts_then_resumes(monkeypatch, registry):
     assert resumed["rows"] == [{"x": 1}]
     # extract ran twice (initial + after the clarification loop).
     assert calls["n"] == 2
+    # The clarification question is recorded as an assistant turn so the
+    # transcript alternates instead of stacking two user turns.
+    roles = [m["role"] for m in resumed["messages"]]
+    assert roles == ["user", "assistant", "user", "assistant"]
+    assert resumed["messages"][1]["content"] == "Which patients?"
 
 
 def _infeasible_bound() -> BoundPlan:

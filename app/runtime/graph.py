@@ -185,7 +185,12 @@ def build_query_graph(registry: SchemaRegistry) -> CompiledStateGraph:
             }
         )
         return Command(
-            update={"messages": [{"role": "user", "content": str(answer)}]},
+            update={
+                "messages": [
+                    {"role": "assistant", "content": question},
+                    {"role": "user", "content": str(answer)},
+                ]
+            },
             goto="extract",
         )
 
