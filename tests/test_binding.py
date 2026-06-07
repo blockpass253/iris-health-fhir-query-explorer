@@ -8,12 +8,13 @@ computes the feasibility verdict.
 from app.runtime.binding import (
     BindingDraft,
     FilterBinding,
+    GroupByBinding,
     ResourceBinding,
     TemporalBinding,
     resolve_bound_plan,
 )
 from app.runtime.grounding import build_schema_view
-from app.runtime.models import Filter, QueryPlan, TemporalConstraint
+from app.runtime.models import Filter, GroupBy, QueryPlan, TemporalConstraint
 
 
 def test_fully_groundable_plan_is_answerable(registry):
@@ -238,3 +239,192 @@ def test_temporal_without_date_field_is_infeasible(registry):
 
     assert not bound.feasibility.can_answer
     assert any("time window" in m for m in bound.feasibility.missing)
+
+
+def test_non_patient_root_list_is_answerable(registry):
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="list",
+        root_resource="Encounter",
+        resources=["Encounter"],
+        filters=[
+            Filter(resource="Encounter", path="status", operator="=", value="finished")
+        ],
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Encounter", table="Encounter")],
+        filter_bindings=[
+            FilterBinding(
+                resource="Encounter",
+                path="status",
+                table="Encounter",
+                column_path="Encounter.status",
+            )
+        ],
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert bound.feasibility.can_answer
+    assert bound.root_resource == "Encounter"
+    assert bound.resource_tables == {"Encounter": "Encounter"}
+
+
+def test_rank_concept_grouping_is_answerable(registry):
+    # Observation has a coding child (ObservationCodeCodings), so a coded rank
+    # grounds.
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="rank",
+        root_resource="Observation",
+        resources=["Observation"],
+        group_by=GroupBy(resource="Observation", concept=True),
+        limit=5,
+    )
+    draft = BindingDraft(
+        resource_bindings=[
+            ResourceBinding(resource="Observation", table="Observation")
+        ],
+        group_by_binding=GroupByBinding(resource="Observation", table="Observation"),
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert bound.feasibility.can_answer
+    assert bound.group_by is not None
+    assert bound.group_by.table == "Observation"
+    assert bound.group_by.group_by.concept
+    assert bound.group_by.column_path is None
+    assert bound.limit == 5
+
+
+def test_rank_path_grouping_is_answerable(registry):
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="rank",
+        root_resource="Encounter",
+        resources=["Encounter"],
+        group_by=GroupBy(resource="Encounter", path="status"),
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Encounter", table="Encounter")],
+        group_by_binding=GroupByBinding(
+            resource="Encounter", table="Encounter", column_path="Encounter.status"
+        ),
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert bound.feasibility.can_answer
+    assert bound.group_by is not None
+    assert bound.group_by.column_path == "Encounter.status"
+
+
+def test_rank_concept_without_coding_child_is_infeasible(registry):
+    # Condition has no coding child in the fixture, so grouping by its primary
+    # concept cannot ground.
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="rank",
+        root_resource="Condition",
+        resources=["Condition"],
+        group_by=GroupBy(resource="Condition", concept=True),
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Condition", table="Condition")],
+        group_by_binding=GroupByBinding(resource="Condition", table="Condition"),
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert not bound.feasibility.can_answer
+    assert any("no projected coding child" in m for m in bound.feasibility.missing)
+
+
+def test_rank_root_resource_absent_is_infeasible(registry):
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="rank",
+        root_resource="MedicationRequest",
+        resources=["MedicationRequest"],
+        group_by=GroupBy(resource="MedicationRequest", concept=True),
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="MedicationRequest", table=None)],
+        group_by_binding=GroupByBinding(resource="MedicationRequest", table=None),
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert not bound.feasibility.can_answer
+    assert any(
+        "root resource 'MedicationRequest'" in m for m in bound.feasibility.missing
+    )
+
+
+def test_rank_grouped_path_absent_is_infeasible(registry):
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="rank",
+        root_resource="Encounter",
+        resources=["Encounter"],
+        group_by=GroupBy(resource="Encounter", path="triageCategory"),
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Encounter", table="Encounter")],
+        group_by_binding=GroupByBinding(resource="Encounter", table="Encounter"),
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert not bound.feasibility.can_answer
+    assert any("grouped attribute" in m for m in bound.feasibility.missing)
+
+
+def test_rank_without_group_by_is_infeasible(registry):
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="rank", root_resource="Observation", resources=["Observation"]
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Observation", table="Observation")]
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert not bound.feasibility.can_answer
+    assert any("no grouping target" in m for m in bound.feasibility.missing)
+
+
+def test_non_correlatable_cross_resource_filter_is_infeasible(registry):
+    # Root is Encounter; a Patient-attribute filter cannot be correlated because
+    # Patient carries no patient reference (v1 routes correlation only through a
+    # resource's own patient reference).
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="list",
+        root_resource="Encounter",
+        resources=["Encounter", "Patient"],
+        filters=[
+            Filter(resource="Patient", path="gender", operator="=", value="female")
+        ],
+    )
+    draft = BindingDraft(
+        resource_bindings=[
+            ResourceBinding(resource="Encounter", table="Encounter"),
+            ResourceBinding(resource="Patient", table="Patient"),
+        ],
+        filter_bindings=[
+            FilterBinding(
+                resource="Patient",
+                path="gender",
+                table="Patient",
+                column_path="Patient.gender",
+            )
+        ],
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert not bound.feasibility.can_answer
+    assert any("cannot be correlated" in m for m in bound.feasibility.missing)

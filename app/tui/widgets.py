@@ -304,8 +304,20 @@ class ContextPanel(VerticalScroll):
 
     def update_query(self, plan: QueryPlan, bound: BoundPlan) -> None:
         text = Text()
+        text.append("Root\n", style="bold")
+        text.append(f"{bound.root_resource} · {bound.intent}\n")
+        if bound.intent == "rank" and bound.group_by is not None:
+            limit = bound.limit if bound.limit is not None else 5
+            target = (
+                "primary coded concept"
+                if bound.group_by.group_by.concept
+                else (bound.group_by.column_path or "?")
+            )
+            text.append("\nRank\n", style="bold")
+            text.append(f"group by {bound.group_by.table} ({target})\n")
+            text.append(f"metric={bound.metric} · top {limit}\n")
         if bound.resource_tables:
-            text.append("Resources\n", style="bold")
+            text.append("\nResources\n", style="bold")
             text.append(", ".join(bound.resource_tables.values()) + "\n")
         if bound.filters:
             text.append("\nFilters\n", style="bold")

@@ -79,7 +79,13 @@ def _plan_summary(plan: QueryPlan, bound: BoundPlan, rows: Any) -> str:
     Gives the next extraction enough context to resolve follow-ups (which
     resources/filters were in play) without replaying full structures.
     """
-    parts = [f"intent={plan.intent}"]
+    parts = [f"intent={plan.intent}", f"root={plan.root_resource}"]
+    if plan.group_by is not None:
+        gb = plan.group_by
+        target = "concept" if gb.concept else (gb.path or "?")
+        parts.append(f"group_by={gb.resource}.{target}; metric={plan.metric}")
+        if plan.limit is not None:
+            parts.append(f"limit={plan.limit}")
     if plan.resources:
         parts.append("resources=" + ", ".join(plan.resources))
     if plan.filters:

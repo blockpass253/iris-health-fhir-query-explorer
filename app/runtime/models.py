@@ -17,7 +17,13 @@ from pydantic import BaseModel, Field
 ComparisonOperator = Literal[">", ">=", "<", "<=", "=", "!=", "in", "contains"]
 
 # The high-level shape of the answer the question asks for.
-QueryIntent = Literal["list", "count", "trend"]
+#   list  -> show matching records
+#   count -> how many match
+#   rank  -> grouped aggregate, ordered by a metric (e.g. "top 5 medications")
+QueryIntent = Literal["list", "count", "rank"]
+
+# The aggregate measured per group in a rank query. Only row_count in v1.
+Metric = Literal["row_count"]
 
 
 class Filter(BaseModel):
@@ -50,6 +56,19 @@ class TemporalConstraint(BaseModel):
     label: str | None = None
 
 
+class GroupBy(BaseModel):
+    """How a ``rank`` query groups its root resource.
+
+    ``concept`` and ``path`` are mutually exclusive. ``concept=True`` groups by the
+    root's primary coded concept (its coding child's code/display/system).
+    ``path`` groups by a direct attribute (e.g. ``Encounter.status``).
+    """
+
+    resource: str
+    concept: bool = False
+    path: str | None = None
+
+
 class QueryPlan(BaseModel):
     """Ungrounded extraction output: the question as structured intent.
 
@@ -58,9 +77,13 @@ class QueryPlan(BaseModel):
     """
 
     intent: QueryIntent = "list"
+    root_resource: str = "Patient"
     resources: list[str] = Field(default_factory=list)
     filters: list[Filter] = Field(default_factory=list)
     temporal_constraints: list[TemporalConstraint] = Field(default_factory=list)
+    group_by: GroupBy | None = None
+    metric: Metric = "row_count"
+    limit: int | None = None
 
 
 class Coding(BaseModel):
@@ -93,6 +116,19 @@ class BoundTemporal(BaseModel):
     column_path: str
 
 
+class BoundGroupBy(BaseModel):
+    """A grouping resolved against the indexed schema.
+
+    ``table`` is the real root table. ``column_path`` is the concrete FHIR path for
+    a direct-attribute grouping; it is ``None`` for concept grouping, where SQL
+    generation locates the root's coding child via :func:`coding_child`.
+    """
+
+    group_by: GroupBy
+    table: str
+    column_path: str | None = None
+
+
 class Feasibility(BaseModel):
     """Whether the indexed schema can fully answer the question."""
 
@@ -109,8 +145,12 @@ class BoundPlan(BaseModel):
     """
 
     intent: QueryIntent
+    root_resource: str = "Patient"
     resource_tables: dict[str, str] = Field(default_factory=dict)
     filters: list[BoundFilter] = Field(default_factory=list)
     temporal_constraints: list[BoundTemporal] = Field(default_factory=list)
+    group_by: BoundGroupBy | None = None
+    metric: Metric = "row_count"
+    limit: int | None = None
     feasibility: Feasibility = Field(default_factory=Feasibility)
     clarifying_question: str | None = None

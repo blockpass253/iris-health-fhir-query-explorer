@@ -17,9 +17,11 @@ from app.runtime.grounding import (
 )
 from app.runtime.models import (
     BoundFilter,
+    BoundGroupBy,
     BoundPlan,
     BoundTemporal,
     Filter,
+    GroupBy,
     TemporalConstraint,
 )
 from app.runtime.sql_generation import SqlQuery, _as_bool, generate_sql, render_sql
@@ -84,10 +86,10 @@ def test_concept_filter_emits_nested_exists_with_system_code_pairs(registry):
 
     sql = generate_sql(bound, registry)
 
-    assert sql.sql.startswith("SELECT DISTINCT TOP 50 p.*")
-    assert 'FROM "TEST1"."Patient" p' in sql.sql
+    assert sql.sql.startswith("SELECT DISTINCT TOP 50 r.*")
+    assert 'FROM "TEST1"."Patient" r' in sql.sql
     assert 'EXISTS (SELECT 1 FROM "TEST1"."Observation" r0' in sql.sql
-    assert 'r0."Patient" = \'Patient/\' || p."ID"' in sql.sql
+    assert 'r0."Patient" = \'Patient/\' || r."ID"' in sql.sql
     assert '"TEST1"."ObservationCodeCodings" r0c' in sql.sql
     assert 'r0c."Observation" = r0."ID"' in sql.sql
     assert '(r0c."System" = ? AND r0c."Code" = ?)' in sql.sql
@@ -114,7 +116,7 @@ def test_patient_attribute_filter(registry):
 
     sql = generate_sql(bound, registry)
 
-    assert 'p."Gender" = ?' in sql.sql
+    assert 'r."Gender" = ?' in sql.sql
     assert sql.params == ["female"]
 
 
@@ -140,7 +142,7 @@ def test_alive_filter_emits_null_presence_check(registry):
 
     sql = generate_sql(bound, registry)
 
-    assert 'p."DeceasedDateTime" IS NULL' in sql.sql
+    assert 'r."DeceasedDateTime" IS NULL' in sql.sql
     assert sql.params == []
 
 
@@ -164,7 +166,7 @@ def test_deceased_filter_emits_not_null_presence_check(registry):
 
     sql = generate_sql(bound, registry)
 
-    assert 'p."DeceasedDateTime" IS NOT NULL' in sql.sql
+    assert 'r."DeceasedDateTime" IS NOT NULL' in sql.sql
     assert sql.params == []
 
 
@@ -191,7 +193,7 @@ def test_deceased_filter_with_dropped_value_degrades_to_null_check(registry):
 
     sql = generate_sql(bound, registry)
 
-    assert 'p."DeceasedDateTime" IS NULL' in sql.sql
+    assert 'r."DeceasedDateTime" IS NULL' in sql.sql
     assert sql.params == []
     # render_sql validates placeholder/param parity; it must not raise.
     assert "?" not in render_sql(sql)
@@ -216,7 +218,7 @@ def test_deceased_filter_with_integer_zero_is_presence_check(registry):
 
     sql = generate_sql(bound, registry)
 
-    assert 'p."DeceasedDateTime" IS NULL' in sql.sql
+    assert 'r."DeceasedDateTime" IS NULL' in sql.sql
     assert sql.params == []
     assert "= 0" not in render_sql(sql)
 
@@ -238,7 +240,7 @@ def test_deceased_filter_with_integer_one_is_not_null_presence_check(registry):
 
     sql = generate_sql(bound, registry)
 
-    assert 'p."DeceasedDateTime" IS NOT NULL' in sql.sql
+    assert 'r."DeceasedDateTime" IS NOT NULL' in sql.sql
     assert sql.params == []
 
 
@@ -256,7 +258,7 @@ def test_age_filter_uses_birthdate_threshold(registry):
 
     sql = generate_sql(bound, registry)
 
-    assert 'p."BirthDate" <= ?' in sql.sql  # older than 65 => born on/before cutoff
+    assert 'r."BirthDate" <= ?' in sql.sql  # older than 65 => born on/before cutoff
     assert len(sql.params) == 1
     assert sql.params[0][:4] == str(date.today().year - 65)
 
@@ -276,14 +278,14 @@ def test_temporal_filter_uses_computed_date(registry):
 
     sql = generate_sql(bound, registry)
 
-    assert 'p."BirthDate" >= ?' in sql.sql
+    assert 'r."BirthDate" >= ?' in sql.sql
     assert sql.params == [(date.today() - timedelta(days=30)).isoformat()]
 
 
 def test_count_intent(registry):
     bound = BoundPlan(intent="count", resource_tables={"Patient": "Patient"})
     sql = generate_sql(bound, registry)
-    assert sql.sql.startswith('SELECT COUNT(DISTINCT p."ID")')
+    assert sql.sql.startswith('SELECT COUNT(DISTINCT r."ID")')
 
 
 def test_generation_uses_renamed_physical_columns(registry):
@@ -320,8 +322,163 @@ def test_generation_uses_renamed_physical_columns(registry):
 
     sql = generate_sql(bound, custom)
 
-    assert 'p."Sex" = ?' in sql.sql
+    assert 'r."Sex" = ?' in sql.sql
     assert 'r0c."Cd" = ?' in sql.sql
+
+
+# --- Root-aware list/count ---------------------------------------------------
+
+
+def test_non_patient_root_list(registry):
+    bound = BoundPlan(
+        intent="list",
+        root_resource="Encounter",
+        resource_tables={"Encounter": "Encounter"},
+        filters=[
+            BoundFilter(
+                filter=Filter(
+                    resource="Encounter",
+                    path="status",
+                    operator="=",
+                    value="finished",
+                ),
+                table="Encounter",
+                column_path="Encounter.status",
+            )
+        ],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert sql.sql.startswith("SELECT DISTINCT TOP 50 r.*")
+    assert 'FROM "TEST1"."Encounter" r' in sql.sql
+    assert 'r."Status" = ?' in sql.sql
+    assert sql.params == ["finished"]
+
+
+def test_non_patient_root_correlates_other_resource_by_patient_ref(registry):
+    bound = BoundPlan(
+        intent="list",
+        root_resource="Encounter",
+        resource_tables={"Encounter": "Encounter", "Observation": "Observation"},
+        filters=[
+            BoundFilter(
+                filter=Filter(
+                    resource="Encounter",
+                    path="status",
+                    operator="=",
+                    value="finished",
+                ),
+                table="Encounter",
+                column_path="Encounter.status",
+            ),
+            BoundFilter(
+                filter=Filter(resource="Observation", concept="a1c"),
+                table="Observation",
+                codings=lookup_codes("a1c"),
+            ),
+        ],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert 'r."Status" = ?' in sql.sql
+    assert 'EXISTS (SELECT 1 FROM "TEST1"."Observation" r0' in sql.sql
+    # Non-patient root links by comparing both patient-reference columns.
+    assert 'r0."Patient" = r."Patient"' in sql.sql
+    assert sql.params == ["finished", "http://loinc.org", "4548-4"]
+
+
+def test_root_limit_overrides_default_list_cap(registry):
+    bound = BoundPlan(
+        intent="list",
+        root_resource="Encounter",
+        resource_tables={"Encounter": "Encounter"},
+        limit=10,
+    )
+    sql = generate_sql(bound, registry)
+    assert sql.sql.startswith("SELECT DISTINCT TOP 10 r.*")
+
+
+# --- Rank --------------------------------------------------------------------
+
+
+def test_rank_concept_grouping_on_coding_child(registry):
+    bound = BoundPlan(
+        intent="rank",
+        root_resource="Observation",
+        resource_tables={"Observation": "Observation"},
+        group_by=BoundGroupBy(
+            group_by=GroupBy(resource="Observation", concept=True),
+            table="Observation",
+        ),
+        limit=5,
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert sql.sql.startswith("SELECT TOP 5 ")
+    assert 'g."Code" AS code' in sql.sql
+    assert 'g."Display" AS display' in sql.sql
+    assert 'g."System" AS system' in sql.sql
+    assert 'COUNT(DISTINCT r."ID") AS cnt' in sql.sql
+    assert 'FROM "TEST1"."Observation" r' in sql.sql
+    assert (
+        'JOIN "TEST1"."ObservationCodeCodings" g ON g."Observation" = r."ID"' in sql.sql
+    )
+    assert 'GROUP BY g."Code", g."Display", g."System"' in sql.sql
+    assert sql.sql.rstrip().endswith("ORDER BY cnt DESC")
+    assert sql.params == []
+
+
+def test_rank_path_grouping_on_direct_attribute(registry):
+    bound = BoundPlan(
+        intent="rank",
+        root_resource="Encounter",
+        resource_tables={"Encounter": "Encounter"},
+        group_by=BoundGroupBy(
+            group_by=GroupBy(resource="Encounter", path="status"),
+            table="Encounter",
+            column_path="Encounter.status",
+        ),
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert sql.sql.startswith("SELECT TOP 5 ")  # default rank limit
+    assert 'r."Status" AS status' in sql.sql
+    assert 'COUNT(DISTINCT r."ID") AS cnt' in sql.sql
+    assert 'FROM "TEST1"."Encounter" r' in sql.sql
+    assert 'GROUP BY r."Status"' in sql.sql
+    assert "ORDER BY cnt DESC" in sql.sql
+    assert sql.params == []
+
+
+def test_rank_with_temporal_filter_on_root(registry):
+    bound = BoundPlan(
+        intent="rank",
+        root_resource="Patient",
+        resource_tables={"Patient": "Patient"},
+        group_by=BoundGroupBy(
+            group_by=GroupBy(resource="Patient", path="gender"),
+            table="Patient",
+            column_path="Patient.gender",
+        ),
+        temporal_constraints=[
+            BoundTemporal(
+                constraint=TemporalConstraint(resource="Patient", last_n_days=30),
+                table="Patient",
+                column_path="Patient.birthDate",
+            )
+        ],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert 'r."Gender" AS gender' in sql.sql
+    assert 'WHERE r."BirthDate" >= ?' in sql.sql
+    assert 'GROUP BY r."Gender"' in sql.sql
+    assert sql.params == [(date.today() - timedelta(days=30)).isoformat()]
 
 
 # --- render_sql --------------------------------------------------------------

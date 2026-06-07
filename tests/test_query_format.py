@@ -2,8 +2,18 @@
 
 from rich.table import Table
 
-from app.commands.query import QueryResult, format_results
-from app.runtime.models import BoundPlan, QueryPlan
+from app.commands.query import (
+    QueryResult,
+    format_bound,
+    format_extracted,
+    format_results,
+)
+from app.runtime.models import (
+    BoundGroupBy,
+    BoundPlan,
+    GroupBy,
+    QueryPlan,
+)
 
 
 def _result(rows, error=None) -> QueryResult:
@@ -51,3 +61,42 @@ def test_error_returns_string():
     out = format_results(_result(None, error="boom"), "list")
     assert isinstance(out, str)
     assert "boom" in out
+
+
+def test_ranked_rows_render_as_table():
+    rows = [
+        {"code": "6809", "display": "Metformin", "system": "rxnorm", "cnt": 42},
+        {"code": "4548-4", "display": "A1c", "system": "loinc", "cnt": 17},
+    ]
+    out = format_results(_result(rows), "rank")
+    assert isinstance(out, Table)
+    assert out.row_count == 2
+    assert [c.header for c in out.columns] == ["code", "display", "system", "cnt"]
+
+
+def test_format_plans_surface_rank_shape():
+    plan = QueryPlan(
+        intent="rank",
+        root_resource="MedicationRequest",
+        resources=["MedicationRequest"],
+        group_by=GroupBy(resource="MedicationRequest", concept=True),
+        limit=5,
+    )
+    extracted = format_extracted(plan)
+    assert "Root: MedicationRequest" in extracted
+    assert "top 5" in extracted
+
+    bound = BoundPlan(
+        intent="rank",
+        root_resource="MedicationRequest",
+        resource_tables={"MedicationRequest": "MedicationRequest"},
+        group_by=BoundGroupBy(
+            group_by=GroupBy(resource="MedicationRequest", concept=True),
+            table="MedicationRequest",
+        ),
+        limit=5,
+    )
+    grounded = format_bound(bound)
+    assert "Root: MedicationRequest" in grounded
+    assert "metric: row_count" in grounded
+    assert "top 5" in grounded

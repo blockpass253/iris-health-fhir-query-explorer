@@ -120,9 +120,27 @@ def _filter_phrase(flt: Filter) -> str:
     return subject
 
 
+def _group_target(group_by) -> str:
+    """Compact description of a (bound or unbound) group_by's grouping target."""
+    inner = getattr(group_by, "group_by", group_by)  # BoundGroupBy wraps a GroupBy
+    if inner.concept:
+        return "primary coded concept"
+    return getattr(group_by, "column_path", None) or inner.path or "?"
+
+
 def format_extracted(plan: QueryPlan) -> str:
     """Render the ungrounded extracted plan for the CLI and TUI."""
-    lines: list[str] = ["[b]Extracted Plan[/]", f"Intent: {plan.intent}"]
+    lines: list[str] = [
+        "[b]Extracted Plan[/]",
+        f"Intent: {plan.intent}",
+        f"Root: {plan.root_resource}",
+    ]
+    if plan.intent == "rank" and plan.group_by is not None:
+        limit = plan.limit if plan.limit is not None else 5
+        lines.append(
+            f"Rank: group by {plan.group_by.resource} "
+            f"({_group_target(plan.group_by)}); metric={plan.metric}; top {limit}"
+        )
     lines += ["", "Resources:"]
     if plan.resources:
         lines.extend(f"- {r}" for r in plan.resources)
@@ -148,13 +166,29 @@ def format_extracted(plan: QueryPlan) -> str:
 
 def format_bound(bound: BoundPlan) -> str:
     """Render the schema-grounded bound plan, including the feasibility verdict."""
-    lines: list[str] = ["[b]Grounded Plan[/]", "", "Resource → Table:"]
+    lines: list[str] = [
+        "[b]Grounded Plan[/]",
+        f"Root: {bound.root_resource}",
+        "",
+        "Resource → Table:",
+    ]
     if bound.resource_tables:
         lines.extend(
             f"- {res} → {table}" for res, table in bound.resource_tables.items()
         )
     else:
         lines.append("- (none)")
+
+    if bound.intent == "rank" and bound.group_by is not None:
+        limit = bound.limit if bound.limit is not None else 5
+        lines += [
+            "",
+            "Rank:",
+            f"- group by [b]{bound.group_by.table}[/] "
+            f"({_group_target(bound.group_by)})",
+            f"- metric: {bound.metric}",
+            f"- top {limit}",
+        ]
 
     lines.append("")
     lines.append("Filters:")

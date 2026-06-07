@@ -41,6 +41,20 @@ def test_date_paths_detected(registry):
     assert "Patient.birthDate" in _resource(view, "Patient").date_paths
 
 
+def test_capability_flags_for_grouping_and_correlation(registry):
+    view = build_schema_view(registry)
+    # Observation has a coding child; Condition/Encounter do not.
+    assert _resource(view, "Observation").has_coding_child
+    assert not _resource(view, "Condition").has_coding_child
+    assert not _resource(view, "Encounter").has_coding_child
+    # Resources with a subject reference can correlate by patient identity;
+    # Patient itself carries no patient reference.
+    assert _resource(view, "Condition").has_patient_reference
+    assert _resource(view, "Observation").has_patient_reference
+    assert _resource(view, "Encounter").has_patient_reference
+    assert not _resource(view, "Patient").has_patient_reference
+
+
 def test_derive_nested_element_path():
     assert (
         derive_nested_element_path("Observation", "ObservationCodeCodings", ["code"])

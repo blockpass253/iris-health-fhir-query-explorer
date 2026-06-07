@@ -18,9 +18,10 @@ from app.llm.client import get_async_client
 from app.llm.settings import get_llm_settings
 from app.logging.setup import get_logger
 from app.runtime.coding import lookup_codes
-from app.runtime.grounding import SchemaView, build_schema_view
+from app.runtime.grounding import SchemaResource, SchemaView, build_schema_view
 from app.runtime.models import (
     BoundFilter,
+    BoundGroupBy,
     BoundPlan,
     BoundTemporal,
     Feasibility,
@@ -59,12 +60,25 @@ class TemporalBinding(BaseModel):
     column_path: str | None = None
 
 
+class GroupByBinding(BaseModel):
+    """LLM proposal: a rank grouping mapped to a real table/path.
+
+    ``column_path`` is only set for direct-attribute grouping; concept grouping
+    leaves it null (the coding child is located deterministically downstream).
+    """
+
+    resource: str
+    table: str | None = None
+    column_path: str | None = None
+
+
 class BindingDraft(BaseModel):
     """Structured LLM output: proposed mappings, validated downstream."""
 
     resource_bindings: list[ResourceBinding] = Field(default_factory=list)
     filter_bindings: list[FilterBinding] = Field(default_factory=list)
     temporal_bindings: list[TemporalBinding] = Field(default_factory=list)
+    group_by_binding: GroupByBinding | None = None
     clarifying_question: str | None = None
     notes: str | None = None
 
@@ -92,13 +106,31 @@ def resolve_bound_plan(
         return res.name if res else None
 
     rb_by_resource = {_norm(rb.resource): rb for rb in draft.resource_bindings}
-    resource_tables: dict[str, str] = {}
-    missing_resources: set[str] = set()
-    for resource in plan.resources:
-        rb = rb_by_resource.get(_norm(resource))
+
+    def bind_resource(name: str) -> str | None:
+        rb = rb_by_resource.get(_norm(name))
         # Fall back to an exact resource-name match when the LLM fails to bind a
         # table that is plainly present in the view (observed with weaker models).
-        table = (real_table(rb.table) if rb else None) or real_table(resource)
+        return (real_table(rb.table) if rb else None) or real_table(name)
+
+    resource_tables: dict[str, str] = {}
+    missing_resources: set[str] = set()
+
+    # Root resource: validated like any resource but with a dedicated message; it
+    # anchors SQL generation and (for rank) carries the grouping.
+    root_table = bind_resource(plan.root_resource)
+    if root_table:
+        resource_tables[plan.root_resource] = root_table
+    else:
+        missing.append(
+            f"root resource '{plan.root_resource}' is not in the indexed schema"
+        )
+        missing_resources.add(_norm(plan.root_resource))
+
+    for resource in plan.resources:
+        if _norm(resource) == _norm(plan.root_resource):
+            continue  # already handled as the root
+        table = bind_resource(resource)
         if table:
             resource_tables[resource] = table
         else:
@@ -161,14 +193,80 @@ def resolve_bound_plan(
             BoundTemporal(constraint=tc, table=table, column_path=column_path)
         )
 
+    # Rank grouping: validate against the bound root's capabilities.
+    bound_group_by = _resolve_group_by(
+        plan, draft, root_table, by_name, table_paths, missing
+    )
+
+    # Cross-resource correlation: any non-root resource carrying a predicate must
+    # be reachable from the root through patient identity (v1 limit). Patient root
+    # links by its ID; a non-patient root links by its own patient reference.
+    root_res = by_name.get(_norm(root_table)) if root_table else None
+    root_correlatable = bool(
+        root_res
+        and (root_res.resource_type == "Patient" or root_res.has_patient_reference)
+    )
+    predicate_tables = {bf.table for bf in bound_filters} | {
+        bt.table for bt in bound_temporal
+    }
+    flagged: set[str] = set()
+    for table in predicate_tables:
+        if not root_table or table == root_table or table in flagged:
+            continue
+        other = by_name.get(_norm(table))
+        if not (root_correlatable and other and other.has_patient_reference):
+            missing.append(
+                f"{table} cannot be correlated to {root_table} through patient identity"
+            )
+            flagged.add(table)
+
     return BoundPlan(
         intent=plan.intent,
+        root_resource=plan.root_resource,
         resource_tables=resource_tables,
         filters=bound_filters,
         temporal_constraints=bound_temporal,
+        group_by=bound_group_by,
+        metric=plan.metric,
+        limit=plan.limit,
         feasibility=Feasibility(can_answer=not missing, missing=missing),
         clarifying_question=draft.clarifying_question or None,
     )
+
+
+def _resolve_group_by(
+    plan: QueryPlan,
+    draft: BindingDraft,
+    root_table: str | None,
+    by_name: dict[str, "SchemaResource"],
+    table_paths: dict[str, set[str]],
+    missing: list[str],
+) -> BoundGroupBy | None:
+    """Validate a rank query's grouping against the bound root; append gaps."""
+    if plan.intent != "rank":
+        return None
+    gb = plan.group_by
+    if gb is None or not (gb.concept or gb.path):
+        missing.append("rank query has no grouping target")
+        return None
+    if not root_table:
+        return None  # the missing-root message is the single root cause
+
+    root_res = by_name.get(_norm(root_table))
+    if gb.concept:
+        if root_res and root_res.has_coding_child:
+            return BoundGroupBy(group_by=gb, table=root_table, column_path=None)
+        missing.append(f"grouped concept on {root_table} has no projected coding child")
+        return None
+
+    # Direct-attribute grouping: prefer the LLM-bound path, else the raw path,
+    # and require it to be a real projected path on the root table.
+    gbb = draft.group_by_binding
+    proposed = (gbb.column_path if gbb and gbb.column_path else None) or gb.path
+    if proposed and proposed in table_paths.get(root_table, set()):
+        return BoundGroupBy(group_by=gb, table=root_table, column_path=proposed)
+    missing.append(f"grouped attribute '{gb.path}' not found on {root_table}")
+    return None
 
 
 def _render_transcript(history: list[dict[str, str]]) -> str:

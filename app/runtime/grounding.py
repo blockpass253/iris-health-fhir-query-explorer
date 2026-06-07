@@ -31,13 +31,20 @@ _DATE_TYPES = {SemanticType.DATE, SemanticType.DATETIME}
 
 
 class SchemaResource(BaseModel):
-    """One real root resource as exposed to the binding LLM."""
+    """One real root resource as exposed to the binding LLM.
+
+    ``has_coding_child`` / ``has_patient_reference`` are deterministic capability
+    flags the binding validator uses to decide feasibility of concept grouping and
+    cross-resource (patient-identity) correlation without re-reading the registry.
+    """
 
     name: str
     resource_type: str | None = None
     paths: list[str] = Field(default_factory=list)
     date_paths: list[str] = Field(default_factory=list)
     coding_systems: list[str] = Field(default_factory=list)
+    has_coding_child: bool = False
+    has_patient_reference: bool = False
 
 
 class SchemaView(BaseModel):
@@ -311,6 +318,10 @@ def build_schema_view(registry: SchemaRegistry) -> SchemaView:
                 paths=_dedup(paths)[:MAX_PATHS_PER_RESOURCE],
                 date_paths=_dedup(date_paths),
                 coding_systems=_dedup(systems),
+                has_coding_child=coding_child(registry, root) is not None,
+                has_patient_reference=(
+                    patient_reference_column(registry.tables[root]) is not None
+                ),
             )
         )
 
