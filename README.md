@@ -77,6 +77,20 @@ persists a semantic registry to `data/schema_registry.json`.
 
 No LLM is used in this stage.
 
+#### Coding Dictionary
+
+During `index-schema`, the pipeline also samples each coding child table's
+`system`, `code`, and `display` columns to discover terminology codes present
+in the database. The results are merged with a set of hardcoded baseline entries
+(hardcoded entries always take precedence) and written to
+`data/coding_dictionary.json`.
+
+At runtime, `lookup_codes()` reads from this file when it exists, falling back
+to the hardcoded entries when the file is absent (e.g. in test environments).
+
+Re-run `index-schema` after loading new patient data to refresh the coding
+dictionary.
+
 ### Runtime
 
 The runtime query flow is:
@@ -224,6 +238,8 @@ Configure the LLM runtime:
 - [app/tui/](app/tui): interactive Textual interface
 - [data/schema_registry.json](data/schema_registry.json): persisted semantic
   registry output
+- [data/coding_dictionary.json](data/coding_dictionary.json): generated coding
+  concept-to-code dictionary (produced by `index-schema`)
 
 ## Development
 

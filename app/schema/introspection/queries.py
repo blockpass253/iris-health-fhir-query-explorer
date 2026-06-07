@@ -125,3 +125,34 @@ def fetch_distinct_values(
     rows = run_query(sql, settings=settings)
     assert isinstance(rows, list)
     return [(r["val"], r["n"]) for r in rows]
+
+
+def fetch_coding_entries(
+    schema: str,
+    table: str,
+    system_col: str,
+    code_col: str,
+    display_col: str | None,
+    settings: IrisSettings | None = None,
+    limit: int = 200,
+) -> list[tuple[str, str, str | None, int]]:
+    """Sample (system, code, display, count) rows from a coding table.
+
+    Returns tuples ordered by descending count. Identifiers are double-quoted
+    (sourced from INFORMATION_SCHEMA). When display_col is None, display is NULL.
+    """
+    s_col = _quote_ident(system_col)
+    c_col = _quote_ident(code_col)
+    d_expr = _quote_ident(display_col) if display_col else "NULL"
+    d_group = f", {_quote_ident(display_col)}" if display_col else ""
+    sql = (
+        f"SELECT TOP {int(limit)} {s_col} AS sys, {c_col} AS cod, "
+        f"{d_expr} AS dis, COUNT(*) AS n "
+        f"FROM {_quote_ident(schema)}.{_quote_ident(table)} "
+        f"WHERE {s_col} IS NOT NULL AND {c_col} IS NOT NULL "
+        f"GROUP BY {s_col}, {c_col}{d_group} "
+        f"ORDER BY n DESC"
+    )
+    rows = run_query(sql, settings=settings)
+    assert isinstance(rows, list)
+    return [(r["sys"], r["cod"], r["dis"], r["n"]) for r in rows]

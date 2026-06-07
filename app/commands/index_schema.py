@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.iris import IrisSettings, get_settings
 from app.logging.setup import get_logger
+from app.runtime.coding import SYNONYMS
 from app.schema.graph.builder import build_semantic_graph, render_graph_tree
 from app.schema.introspection.queries import (
     fetch_columns,
@@ -17,9 +18,14 @@ from app.schema.introspection.queries import (
     fetch_tables,
 )
 from app.schema.models.registry import RelationshipType, SchemaRegistry
+from app.schema.persistence.coding_store import (
+    DEFAULT_CODING_DICT_PATH,
+    CodingDictionary,
+    save_coding_dictionary,
+)
 from app.schema.persistence.registry_store import DEFAULT_REGISTRY_PATH, save_registry
 from app.semantic.inference import build_tables, infer_relationships, parse_columns
-from app.semantic.profiling import profile_coding_systems
+from app.semantic.profiling import profile_coding_entries, profile_coding_systems
 
 log = get_logger("index_schema")
 
@@ -36,6 +42,7 @@ def run_index_schema(
     schema: str,
     namespace: str | None = None,
     registry_path: Path = DEFAULT_REGISTRY_PATH,
+    coding_dict_path: Path = DEFAULT_CODING_DICT_PATH,
 ) -> SchemaRegistry:
     """Index ``schema`` and persist the resulting semantic registry.
 
@@ -58,6 +65,25 @@ def run_index_schema(
     parsed_by_table = parse_columns(raw_columns)
     tables = build_tables(raw_tables, parsed_by_table)
     profile_coding_systems(tables, schema, settings=settings)
+
+    db_systems = profile_coding_entries(tables, schema, settings=settings)
+    coding_dict = CodingDictionary(
+        schema_name=schema,
+        generated_at=datetime.now(UTC),
+        systems=db_systems,
+    )
+    for key, codings in SYNONYMS.items():
+        for coding in codings:
+            coding_dict.set_coding(key, coding)  # hardcoded always wins
+    written_coding = save_coding_dictionary(coding_dict, coding_dict_path)
+    log.info(
+        "coding_dictionary.written",
+        path=str(written_coding),
+        concepts=coding_dict.concept_count,
+        db_derived=sum(len(e) for e in db_systems.values()),
+        hardcoded=len(SYNONYMS),
+    )
+
     relationships = infer_relationships(tables, raw_fks)
     graph = build_semantic_graph(tables, relationships)
 
@@ -76,6 +102,7 @@ def run_index_schema(
         "physical_relationships": physical,
         "semantic_relationships": semantic,
         "coding_columns_profiled": coding_columns_profiled,
+        "coding_dictionary_concepts": coding_dict.concept_count,
     }
     log.info("inference.done", **stats)
 
@@ -119,7 +146,9 @@ def _coding_systems_lines(registry: SchemaRegistry) -> list[str]:
 
 
 def format_summary(
-    registry: SchemaRegistry, registry_path: Path = DEFAULT_REGISTRY_PATH
+    registry: SchemaRegistry,
+    registry_path: Path = DEFAULT_REGISTRY_PATH,
+    coding_dict_path: Path = DEFAULT_CODING_DICT_PATH,
 ) -> str:
     """Render the human-readable indexing summary shared by the CLI and TUI."""
     s = registry.stats
@@ -140,5 +169,6 @@ def format_summary(
             render_graph_tree(registry.graph),
             "",
             f"Registry written to:\n{registry_path}",
+            f"Coding dictionary written to:\n{coding_dict_path}",
         ]
     )
