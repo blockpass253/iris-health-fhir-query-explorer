@@ -113,12 +113,14 @@ class IrisTUI(App):
         event.input.clear()
         if not command:
             return
+        start_message(command)
+        if command == "/clear":
+            self._clear()
+            return
         # Any new submission supersedes a pending clarification — drop its panel.
         self._dismiss_clarification()
-        # Reset the per-message dump files before any output or LLM call.
-        start_message(command)
         # Slash commands are only dispatched when not mid-clarification, so a
-        # reply like "/clear" during a pause still reads naturally as an answer.
+        # reply like "/index-schema" during a pause still reads naturally as an answer.
         if command.startswith("/") and not self._awaiting_clarification:
             self._dispatch(command)
         else:
@@ -128,11 +130,15 @@ class IrisTUI(App):
         self._clear()
 
     def _clear(self) -> None:
+        self.workers.cancel_all()
         self._dismiss_clarification()
         self.query_one("#transcript", VerticalScroll).remove_children()
         self.query_one(ContextPanel).reset_query()
         self._current_turn = None
         self._new_conversation()  # clearing the screen also resets memory
+        inp = self.query_one(Input)
+        inp.disabled = False
+        inp.focus()
 
     def _dismiss_clarification(self) -> None:
         """Remove the pinned clarification panel, if one is showing."""
@@ -179,6 +185,9 @@ class IrisTUI(App):
         graph = self._graph
         assert graph is not None  # guaranteed by _ensure_graph
 
+        inp = self.query_one(Input)
+        inp.disabled = True
+
         transcript = self.query_one("#transcript", VerticalScroll)
         if self._current_turn is not None:  # collapse the prior turn to reduce scroll
             self._current_turn.collapsed = True
@@ -215,6 +224,7 @@ class IrisTUI(App):
                 await self.mount(panel, before=self.query_one(Input))
                 self._clarification_panel = panel
                 record_output(interrupt_value["question"])
+                inp.disabled = False  # user must type their clarification reply
                 return
 
             state = graph.get_state(config).values
@@ -231,3 +241,6 @@ class IrisTUI(App):
             turn.tracker.fail()
             await turn.show_error(str(exc))
             record_output(f"Query planning failed: {exc}")
+        finally:
+            inp.disabled = False
+            inp.focus()
