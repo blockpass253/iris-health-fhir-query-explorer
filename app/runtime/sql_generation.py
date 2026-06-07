@@ -33,7 +33,13 @@ from app.runtime.grounding import (
     patient_reference_column,
     resolve_column_path,
 )
-from app.runtime.models import BoundFilter, BoundPlan, BoundTemporal, Filter
+from app.runtime.models import (
+    BoundFilter,
+    BoundPlan,
+    BoundSortSpec,
+    BoundTemporal,
+    Filter,
+)
 from app.schema.models.registry import (
     RelationshipType,
     SchemaRegistry,
@@ -173,9 +179,17 @@ def _generate_select(bound: BoundPlan, registry: SchemaRegistry) -> SqlQuery:
             params.extend(clause_params)
 
     from_clause = f"{_qualify(registry, root_table.table_name)} {_ROOT_ALIAS}"
-    sql = f"{_select_clause(bound)}\nFROM {from_clause}"
+    select_str, join_str = _build_select_and_join(bound, registry, root_table)
+
+    sql = f"{select_str}\nFROM {from_clause}"
+    if join_str:
+        sql += f"\n{join_str}"
     if where_parts:
         sql += "\nWHERE " + "\n  AND ".join(where_parts)
+    if bound.sort is not None and bound.intent == "list":
+        order = _build_order_by(bound.sort, registry)
+        if order:
+            sql += f"\n{order}"
     return SqlQuery(sql=sql, params=params)
 
 
@@ -488,12 +502,68 @@ def _patient_link(
 # --- Helpers -----------------------------------------------------------------
 
 
-def _select_clause(bound: BoundPlan) -> str:
+def _build_select_and_join(
+    bound: BoundPlan,
+    registry: SchemaRegistry,
+    root_table: TableMetadata,
+) -> tuple[str, str | None]:
+    """Build the SELECT clause and an optional JOIN for projected list queries.
+
+    Returns ``(select_clause, join_clause)``. When no projection is requested,
+    falls back to ``SELECT DISTINCT TOP N r.*`` with no join. For concept
+    projection, adds a JOIN to the root's coding child (alias ``g``) and
+    selects all available concept columns.
+    """
     if bound.intent == "count":
-        return f'SELECT COUNT(DISTINCT {_ROOT_ALIAS}."{_ID_COLUMN}")'
-    # IRIS requires DISTINCT before TOP.
+        return f'SELECT COUNT(DISTINCT {_ROOT_ALIAS}."{_ID_COLUMN}")', None
+
     limit = bound.limit or _LIST_LIMIT
-    return f"SELECT DISTINCT TOP {limit} {_ROOT_ALIAS}.*"
+
+    if not bound.select_fields:
+        return f"SELECT DISTINCT TOP {limit} {_ROOT_ALIAS}.*", None
+
+    cols: list[str] = []
+    needs_concept_join = any(sf.concept for sf in bound.select_fields)
+
+    for sf in bound.select_fields:
+        if sf.concept:
+            continue  # concept columns added below after resolving the child
+        if not sf.column_path:
+            continue
+        col = resolve_column_path(registry, sf.table, sf.column_path)
+        if col is None:
+            continue
+        terminal = sf.column_path.rsplit(".", 1)[-1]
+        cols.append(f'{_ROOT_ALIAS}."{col.column}" AS {terminal}')
+
+    join_clause: str | None = None
+    if needs_concept_join:
+        child = coding_child(registry, root_table.table_name)
+        if child is not None:
+            alias = "g"
+            cols.append(f'{alias}."{child.code.column}" AS code')
+            display = find_column(registry.tables[child.table], terminal="display")
+            if display is not None:
+                cols.append(f'{alias}."{display.column}" AS display')
+            if child.system is not None:
+                cols.append(f'{alias}."{child.system.column}" AS system')
+            join_clause = (
+                f"JOIN {_qualify(registry, child.table)} {alias} "
+                f'ON {alias}."{child.fk_column}" = {_ROOT_ALIAS}."{_ID_COLUMN}"'
+            )
+
+    if not cols:  # every field failed to resolve — fall back to r.*
+        return f"SELECT DISTINCT TOP {limit} {_ROOT_ALIAS}.*", None
+
+    return f"SELECT DISTINCT TOP {limit} {', '.join(cols)}", join_clause
+
+
+def _build_order_by(sort: BoundSortSpec, registry: SchemaRegistry) -> str | None:
+    """Build an ORDER BY clause for the given grounded sort spec."""
+    col = resolve_column_path(registry, sort.table, sort.column_path)
+    if col is None:
+        return None
+    return f'ORDER BY {_ROOT_ALIAS}."{col.column}" {sort.direction.upper()}'
 
 
 def _qualify(registry: SchemaRegistry, table: str) -> str:

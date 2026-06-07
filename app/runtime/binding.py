@@ -23,6 +23,8 @@ from app.runtime.models import (
     BoundFilter,
     BoundGroupBy,
     BoundPlan,
+    BoundSelectedField,
+    BoundSortSpec,
     BoundTemporal,
     Feasibility,
     QueryPlan,
@@ -206,6 +208,12 @@ def resolve_bound_plan(
         plan, draft, root_table, by_name, table_paths, missing
     )
 
+    # Projection and sort: fully deterministic, no LLM binding involved.
+    bound_select_fields = _resolve_select_fields(
+        plan, root_table, by_name, table_paths, missing
+    )
+    bound_sort = _resolve_sort(plan, root_table, table_paths, missing)
+
     # Cross-resource correlation: any non-root resource carrying a predicate must
     # be reachable from the root through patient identity (v1 limit). Patient root
     # links by its ID; a non-patient root links by its own patient reference.
@@ -237,9 +245,96 @@ def resolve_bound_plan(
         group_by=bound_group_by,
         metric=plan.metric,
         limit=plan.limit,
+        select_fields=bound_select_fields,
+        sort=bound_sort,
         feasibility=Feasibility(can_answer=not missing, missing=missing),
         clarifying_question=draft.clarifying_question or None,
     )
+
+
+def _match_terminal(terminal: str, paths: set[str]) -> str | None:
+    """Return the first qualified path whose terminal segment matches ``terminal``."""
+    for p in sorted(paths):
+        if p.split(".")[-1] == terminal:
+            return p
+    return None
+
+
+def _resolve_select_fields(
+    plan: QueryPlan,
+    root_table: str | None,
+    by_name: dict[str, "SchemaResource"],
+    table_paths: dict[str, set[str]],
+    missing: list[str],
+) -> list[BoundSelectedField]:
+    """Deterministically bind each requested projection field to the root table."""
+    if not plan.select_fields or not root_table:
+        return []
+    root_res = by_name.get(_norm(root_table))
+    bound: list[BoundSelectedField] = []
+    for sf in plan.select_fields:
+        if _norm(sf.resource) != _norm(plan.root_resource):
+            missing.append(
+                f"projection from non-root resource "
+                f"'{sf.resource}' is unsupported in v1"
+            )
+            continue
+        if sf.concept:
+            if root_res and root_res.has_coding_child:
+                bound.append(
+                    BoundSelectedField(
+                        resource=sf.resource, table=root_table, concept=True
+                    )
+                )
+            else:
+                missing.append(
+                    f"no coding child for concept projection on {root_table}"
+                )
+        elif sf.path:
+            matched = _match_terminal(sf.path, table_paths.get(root_table, set()))
+            if matched:
+                bound.append(
+                    BoundSelectedField(
+                        resource=sf.resource, table=root_table, column_path=matched
+                    )
+                )
+            else:
+                missing.append(f"field '{sf.path}' not found on {root_table}")
+    return bound
+
+
+def _resolve_sort(
+    plan: QueryPlan,
+    root_table: str | None,
+    table_paths: dict[str, set[str]],
+    missing: list[str],
+) -> BoundSortSpec | None:
+    """Deterministically bind the requested sort to a root-table column."""
+    if plan.sort is None:
+        return None
+    if plan.intent == "rank":
+        return None  # rank has its own ordering; silently ignore
+    if plan.intent == "count":
+        missing.append("sort is not supported for count queries")
+        return None
+    if not root_table:
+        return None
+    sort = plan.sort
+    if _norm(sort.resource) != _norm(plan.root_resource):
+        missing.append(
+            f"sort by non-root resource '{sort.resource}' is unsupported in v1"
+        )
+        return None
+    matched = _match_terminal(sort.path, table_paths.get(root_table, set()))
+    if matched:
+        return BoundSortSpec(
+            resource=sort.resource,
+            table=root_table,
+            column_path=matched,
+            direction=sort.direction,
+        )
+    missing.append(f"sort field '{sort.path}' not found on {root_table}")
+    return None
 
 
 def _resolve_group_by(

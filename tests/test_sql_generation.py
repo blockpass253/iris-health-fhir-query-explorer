@@ -19,6 +19,8 @@ from app.runtime.models import (
     BoundFilter,
     BoundGroupBy,
     BoundPlan,
+    BoundSelectedField,
+    BoundSortSpec,
     BoundTemporal,
     Filter,
     GroupBy,
@@ -551,3 +553,202 @@ def test_render_sql_rejects_param_count_mismatch():
         assert "expected 2 params, got 1" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+# --- Projection (select_fields) ----------------------------------------------
+
+
+def test_empty_select_fields_keeps_star(registry):
+    bound = BoundPlan(
+        intent="list",
+        root_resource="Patient",
+        resource_tables={"Patient": "Patient"},
+        select_fields=[],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert sql.sql.startswith("SELECT DISTINCT TOP 50 r.*")
+
+
+def test_projected_list_emits_explicit_columns(registry):
+    bound = BoundPlan(
+        intent="list",
+        root_resource="Patient",
+        resource_tables={"Patient": "Patient"},
+        select_fields=[
+            BoundSelectedField(
+                resource="Patient", table="Patient", column_path="Patient.gender"
+            )
+        ],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert sql.sql.startswith('SELECT DISTINCT TOP 50 r."Gender" AS gender')
+    assert 'FROM "TEST1"."Patient" r' in sql.sql
+    assert "r.*" not in sql.sql
+
+
+def test_projected_list_with_concept_adds_join_and_concept_cols(registry):
+    bound = BoundPlan(
+        intent="list",
+        root_resource="Observation",
+        resource_tables={"Observation": "Observation"},
+        select_fields=[
+            BoundSelectedField(
+                resource="Observation", table="Observation", concept=True
+            )
+        ],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    join = 'JOIN "TEST1"."ObservationCodeCodings" g ON g."Observation" = r."ID"'
+    assert join in sql.sql
+    assert 'g."Code" AS code' in sql.sql
+    assert 'g."Display" AS display' in sql.sql
+    assert 'g."System" AS system' in sql.sql
+    assert "r.*" not in sql.sql
+
+
+def test_projected_list_mixed_direct_and_concept(registry):
+    bound = BoundPlan(
+        intent="list",
+        root_resource="Observation",
+        resource_tables={"Observation": "Observation"},
+        select_fields=[
+            BoundSelectedField(
+                resource="Observation",
+                table="Observation",
+                column_path="Observation.value.quantity.value",
+            ),
+            BoundSelectedField(
+                resource="Observation", table="Observation", concept=True
+            ),
+        ],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert 'r."ValueQuantityValue" AS value' in sql.sql
+    assert 'g."Code" AS code' in sql.sql
+    assert 'JOIN "TEST1"."ObservationCodeCodings" g' in sql.sql
+
+
+# --- Sorting (sort) ----------------------------------------------------------
+
+
+def test_sort_emits_order_by(registry):
+    bound = BoundPlan(
+        intent="list",
+        root_resource="Patient",
+        resource_tables={"Patient": "Patient"},
+        sort=BoundSortSpec(
+            resource="Patient",
+            table="Patient",
+            column_path="Patient.birthDate",
+            direction="desc",
+        ),
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert sql.sql.startswith("SELECT DISTINCT TOP 50 r.*")
+    assert 'ORDER BY r."BirthDate" DESC' in sql.sql
+
+
+def test_sort_asc_emits_asc(registry):
+    bound = BoundPlan(
+        intent="list",
+        root_resource="Patient",
+        resource_tables={"Patient": "Patient"},
+        sort=BoundSortSpec(
+            resource="Patient",
+            table="Patient",
+            column_path="Patient.gender",
+            direction="asc",
+        ),
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert 'ORDER BY r."Gender" ASC' in sql.sql
+
+
+def test_projected_list_with_sort(registry):
+    bound = BoundPlan(
+        intent="list",
+        root_resource="Patient",
+        resource_tables={"Patient": "Patient"},
+        select_fields=[
+            BoundSelectedField(
+                resource="Patient", table="Patient", column_path="Patient.gender"
+            ),
+            BoundSelectedField(
+                resource="Patient", table="Patient", column_path="Patient.birthDate"
+            ),
+        ],
+        sort=BoundSortSpec(
+            resource="Patient",
+            table="Patient",
+            column_path="Patient.birthDate",
+            direction="desc",
+        ),
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert 'r."Gender" AS gender' in sql.sql
+    assert 'r."BirthDate" AS birthDate' in sql.sql
+    assert 'ORDER BY r."BirthDate" DESC' in sql.sql
+    assert "r.*" not in sql.sql
+
+
+def test_count_ignores_projection_and_sort(registry):
+    bound = BoundPlan(
+        intent="count",
+        root_resource="Patient",
+        resource_tables={"Patient": "Patient"},
+        select_fields=[
+            BoundSelectedField(
+                resource="Patient", table="Patient", column_path="Patient.gender"
+            )
+        ],
+        sort=BoundSortSpec(
+            resource="Patient",
+            table="Patient",
+            column_path="Patient.birthDate",
+            direction="desc",
+        ),
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert sql.sql.startswith('SELECT COUNT(DISTINCT r."ID")')
+    assert "ORDER BY" not in sql.sql
+
+
+def test_rank_unchanged_by_projection_fields(registry):
+    # Rank uses _generate_rank, not _generate_select; projection has no effect.
+    bound = BoundPlan(
+        intent="rank",
+        root_resource="Observation",
+        resource_tables={"Observation": "Observation"},
+        group_by=BoundGroupBy(
+            group_by=GroupBy(resource="Observation", concept=True),
+            table="Observation",
+        ),
+        select_fields=[
+            BoundSelectedField(
+                resource="Observation", table="Observation", concept=True
+            )
+        ],
+        limit=5,
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert sql.sql.startswith("SELECT TOP 5 ")
+    assert "GROUP BY" in sql.sql
+    assert "ORDER BY cnt DESC" in sql.sql

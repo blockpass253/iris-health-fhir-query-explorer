@@ -69,6 +69,33 @@ class GroupBy(BaseModel):
     path: str | None = None
 
 
+class SelectedField(BaseModel):
+    """One field the user wants projected in a list result.
+
+    ``path`` is the terminal FHIR attribute (e.g. ``"gender"``, ``"birthDate"``),
+    exclusive with ``concept``. ``concept=True`` projects the root resource's
+    primary coded concept (code/display/system via its coding child).
+    ``resource`` must equal the query's ``root_resource``.
+    """
+
+    resource: str
+    path: str | None = None
+    concept: bool = False
+
+
+class SortSpec(BaseModel):
+    """An explicit sort the user requested on a list result.
+
+    ``path`` is the terminal FHIR attribute (e.g. ``"birthDate"``).
+    ``resource`` must equal the query's ``root_resource``.
+    Only meaningful for ``list`` intent.
+    """
+
+    resource: str
+    path: str
+    direction: Literal["asc", "desc"] = "asc"
+
+
 class QueryPlan(BaseModel):
     """Ungrounded extraction output: the question as structured intent.
 
@@ -84,6 +111,8 @@ class QueryPlan(BaseModel):
     group_by: GroupBy | None = None
     metric: Metric = "row_count"
     limit: int | None = None
+    select_fields: list[SelectedField] = Field(default_factory=list)
+    sort: SortSpec | None = None
 
 
 class Coding(BaseModel):
@@ -129,6 +158,30 @@ class BoundGroupBy(BaseModel):
     column_path: str | None = None
 
 
+class BoundSelectedField(BaseModel):
+    """A projection field resolved against the indexed schema.
+
+    ``column_path`` is the qualified FHIR path for a direct root attribute
+    (e.g. ``"Patient.gender"``); it is ``None`` when ``concept=True``, where SQL
+    generation locates the root's coding child via :func:`coding_child` and
+    selects all available concept columns (code/display/system).
+    """
+
+    resource: str
+    table: str
+    column_path: str | None = None
+    concept: bool = False
+
+
+class BoundSortSpec(BaseModel):
+    """A sort spec resolved against the indexed schema."""
+
+    resource: str
+    table: str
+    column_path: str
+    direction: Literal["asc", "desc"] = "asc"
+
+
 class Feasibility(BaseModel):
     """Whether the indexed schema can fully answer the question."""
 
@@ -152,5 +205,7 @@ class BoundPlan(BaseModel):
     group_by: BoundGroupBy | None = None
     metric: Metric = "row_count"
     limit: int | None = None
+    select_fields: list[BoundSelectedField] = Field(default_factory=list)
+    sort: BoundSortSpec | None = None
     feasibility: Feasibility = Field(default_factory=Feasibility)
     clarifying_question: str | None = None

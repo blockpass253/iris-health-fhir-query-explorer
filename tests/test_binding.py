@@ -14,7 +14,14 @@ from app.runtime.binding import (
     resolve_bound_plan,
 )
 from app.runtime.grounding import build_schema_view
-from app.runtime.models import Filter, GroupBy, QueryPlan, TemporalConstraint
+from app.runtime.models import (
+    Filter,
+    GroupBy,
+    QueryPlan,
+    SelectedField,
+    SortSpec,
+    TemporalConstraint,
+)
 
 
 def test_fully_groundable_plan_is_answerable(registry):
@@ -428,3 +435,211 @@ def test_non_correlatable_cross_resource_filter_is_infeasible(registry):
 
     assert not bound.feasibility.can_answer
     assert any("cannot be correlated" in m for m in bound.feasibility.missing)
+
+
+# --- Projection (select_fields) ----------------------------------------------
+
+
+def test_direct_field_projection_binds(registry):
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="list",
+        root_resource="Patient",
+        resources=["Patient"],
+        select_fields=[SelectedField(resource="Patient", path="gender")],
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Patient", table="Patient")]
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert bound.feasibility.can_answer
+    assert len(bound.select_fields) == 1
+    sf = bound.select_fields[0]
+    assert sf.column_path == "Patient.gender"
+    assert not sf.concept
+
+
+def test_concept_projection_binds_when_coding_child_exists(registry):
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="list",
+        root_resource="Observation",
+        resources=["Observation"],
+        select_fields=[SelectedField(resource="Observation", concept=True)],
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Observation", table="Observation")]
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert bound.feasibility.can_answer
+    assert len(bound.select_fields) == 1
+    sf = bound.select_fields[0]
+    assert sf.concept
+    assert sf.column_path is None
+    assert sf.table == "Observation"
+
+
+def test_concept_projection_infeasible_no_coding_child(registry):
+    # Condition has no coding child in the TEST1 fixture.
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="list",
+        root_resource="Condition",
+        resources=["Condition"],
+        select_fields=[SelectedField(resource="Condition", concept=True)],
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Condition", table="Condition")]
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert not bound.feasibility.can_answer
+    assert any("no coding child" in m for m in bound.feasibility.missing)
+
+
+def test_projection_from_non_root_is_infeasible(registry):
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="list",
+        root_resource="Patient",
+        resources=["Patient", "Observation"],
+        select_fields=[SelectedField(resource="Observation", path="status")],
+    )
+    draft = BindingDraft(
+        resource_bindings=[
+            ResourceBinding(resource="Patient", table="Patient"),
+            ResourceBinding(resource="Observation", table="Observation"),
+        ]
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert not bound.feasibility.can_answer
+    assert any("non-root resource" in m for m in bound.feasibility.missing)
+
+
+def test_unknown_projection_path_is_infeasible(registry):
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="list",
+        root_resource="Patient",
+        resources=["Patient"],
+        select_fields=[SelectedField(resource="Patient", path="zipCode")],
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Patient", table="Patient")]
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert not bound.feasibility.can_answer
+    assert any("zipCode" in m for m in bound.feasibility.missing)
+
+
+# --- Sorting (sort) -----------------------------------------------------------
+
+
+def test_sort_on_root_field_binds(registry):
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="list",
+        root_resource="Patient",
+        resources=["Patient"],
+        sort=SortSpec(resource="Patient", path="birthDate", direction="desc"),
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Patient", table="Patient")]
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert bound.feasibility.can_answer
+    assert bound.sort is not None
+    assert bound.sort.column_path == "Patient.birthDate"
+    assert bound.sort.direction == "desc"
+
+
+def test_sort_on_non_root_is_infeasible(registry):
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="list",
+        root_resource="Patient",
+        resources=["Patient", "Observation"],
+        sort=SortSpec(resource="Observation", path="status", direction="asc"),
+    )
+    draft = BindingDraft(
+        resource_bindings=[
+            ResourceBinding(resource="Patient", table="Patient"),
+            ResourceBinding(resource="Observation", table="Observation"),
+        ]
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert not bound.feasibility.can_answer
+    assert any("non-root resource" in m for m in bound.feasibility.missing)
+
+
+def test_sort_unknown_path_is_infeasible(registry):
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="list",
+        root_resource="Patient",
+        resources=["Patient"],
+        sort=SortSpec(resource="Patient", path="zipCode", direction="asc"),
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Patient", table="Patient")]
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert not bound.feasibility.can_answer
+    assert any("sort field" in m and "zipCode" in m for m in bound.feasibility.missing)
+
+
+def test_sort_ignored_for_rank(registry):
+    # Rank has its own ordering; a sort spec should be silently dropped.
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="rank",
+        root_resource="Encounter",
+        resources=["Encounter"],
+        group_by=GroupBy(resource="Encounter", path="status"),
+        sort=SortSpec(resource="Encounter", path="status", direction="desc"),
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Encounter", table="Encounter")],
+        group_by_binding=GroupByBinding(
+            resource="Encounter", table="Encounter", column_path="Encounter.status"
+        ),
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert bound.feasibility.can_answer
+    assert bound.sort is None
+    assert not any("sort" in m for m in bound.feasibility.missing)
+
+
+def test_sort_infeasible_for_count(registry):
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="count",
+        root_resource="Patient",
+        resources=["Patient"],
+        sort=SortSpec(resource="Patient", path="gender", direction="asc"),
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Patient", table="Patient")]
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert not bound.feasibility.can_answer
+    assert any("count" in m for m in bound.feasibility.missing)

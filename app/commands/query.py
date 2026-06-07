@@ -161,6 +161,17 @@ def format_extracted(plan: QueryPlan) -> str:
         for tc in plan.temporal_constraints:
             lines.append(f"- [b]{tc.resource}[/]: {_temporal_phrase(tc)}")
 
+    if plan.select_fields:
+        lines.append("")
+        lines.append("Select:")
+        for sf in plan.select_fields:
+            label = "concept" if sf.concept else (sf.path or "?")
+            lines.append(f"- [b]{sf.resource}[/]: {label}")
+
+    if plan.sort is not None:
+        lines.append("")
+        lines.append(f"Sort: {plan.sort.path} {plan.sort.direction}")
+
     return "\n".join(lines)
 
 
@@ -211,6 +222,20 @@ def format_bound(bound: BoundPlan) -> str:
         for bt in bound.temporal_constraints:
             phrase = _temporal_phrase(bt.constraint)
             lines.append(f"- [b]{bt.table}[/]: {phrase} [dim]({bt.column_path})[/]")
+
+    if bound.select_fields:
+        lines.append("")
+        lines.append("Select:")
+        for sf in bound.select_fields:
+            label = "concept" if sf.concept else (sf.column_path or "?")
+            lines.append(f"- [b]{sf.table}[/]: {label}")
+
+    if bound.sort is not None:
+        lines.append("")
+        lines.append(
+            f"Sort: {bound.sort.column_path} {bound.sort.direction} "
+            f"[dim]({bound.sort.table})[/]"
+        )
 
     lines.append("")
     if bound.feasibility.can_answer:

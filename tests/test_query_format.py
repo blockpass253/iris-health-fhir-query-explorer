@@ -11,8 +11,12 @@ from app.commands.query import (
 from app.runtime.models import (
     BoundGroupBy,
     BoundPlan,
+    BoundSelectedField,
+    BoundSortSpec,
     GroupBy,
     QueryPlan,
+    SelectedField,
+    SortSpec,
 )
 
 
@@ -100,3 +104,69 @@ def test_format_plans_surface_rank_shape():
     assert "Root: MedicationRequest" in grounded
     assert "metric: row_count" in grounded
     assert "top 5" in grounded
+
+
+def test_format_extracted_shows_select_fields():
+    plan = QueryPlan(
+        intent="list",
+        root_resource="Patient",
+        resources=["Patient"],
+        select_fields=[
+            SelectedField(resource="Patient", path="gender"),
+            SelectedField(resource="Patient", path="birthDate"),
+        ],
+    )
+    extracted = format_extracted(plan)
+    assert "Select:" in extracted
+    assert "gender" in extracted
+    assert "birthDate" in extracted
+
+
+def test_format_extracted_shows_concept_projection():
+    plan = QueryPlan(
+        intent="list",
+        root_resource="Observation",
+        resources=["Observation"],
+        select_fields=[SelectedField(resource="Observation", concept=True)],
+    )
+    extracted = format_extracted(plan)
+    assert "Select:" in extracted
+    assert "concept" in extracted
+
+
+def test_format_extracted_shows_sort():
+    plan = QueryPlan(
+        intent="list",
+        root_resource="Patient",
+        resources=["Patient"],
+        sort=SortSpec(resource="Patient", path="birthDate", direction="desc"),
+    )
+    extracted = format_extracted(plan)
+    assert "Sort:" in extracted
+    assert "birthDate" in extracted
+    assert "desc" in extracted
+
+
+def test_format_bound_shows_grounded_select_and_sort():
+    bound = BoundPlan(
+        intent="list",
+        root_resource="Patient",
+        resource_tables={"Patient": "Patient"},
+        select_fields=[
+            BoundSelectedField(
+                resource="Patient", table="Patient", column_path="Patient.gender"
+            )
+        ],
+        sort=BoundSortSpec(
+            resource="Patient",
+            table="Patient",
+            column_path="Patient.birthDate",
+            direction="desc",
+        ),
+    )
+    grounded = format_bound(bound)
+    assert "Select:" in grounded
+    assert "Patient.gender" in grounded
+    assert "Sort:" in grounded
+    assert "Patient.birthDate" in grounded
+    assert "desc" in grounded
