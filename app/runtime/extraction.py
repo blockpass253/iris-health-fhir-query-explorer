@@ -53,5 +53,5 @@ async def extract_plan(history: list[dict[str, str]]) -> QueryPlan:
         resources=parsed.resources,
         filters=len(parsed.filters),
     )
-    record_llm("extraction", settings.model, messages, parsed, raw=response)
+    record_llm("extraction", settings.model, messages, parsed)
     return parsed

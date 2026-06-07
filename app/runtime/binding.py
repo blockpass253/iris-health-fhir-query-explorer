@@ -308,7 +308,7 @@ async def bind_plan(
         reasoning={"effort": settings.reasoning_effort},
     )
     draft = response.output_parsed or BindingDraft()
-    record_llm("binding", settings.model, messages, draft, raw=response)
+    record_llm("binding", settings.model, messages, draft)
 
     bound = resolve_bound_plan(plan, draft, view)
     log.info(

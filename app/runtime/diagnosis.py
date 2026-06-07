@@ -85,6 +85,6 @@ async def diagnose_gap(
         reasoning={"effort": settings.reasoning_effort},
     )
     parsed = response.output_parsed or GapDiagnosis()
-    record_llm("diagnosis", settings.model, messages, parsed, raw=response)
+    record_llm("diagnosis", settings.model, messages, parsed)
     log.info("diagnosis.suggestions", count=len(parsed.suggestions))
     return parsed
