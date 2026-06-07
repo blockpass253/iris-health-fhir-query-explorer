@@ -1,94 +1,200 @@
 # iris-search-agent
 
-### Design principles
+`iris-search-agent` is a transparent natural-language query agent for
+InterSystems IRIS for Health FHIR SQL Builder projections.
 
-- SQL is LLM-generated, but always shown to the user — transparency over a hidden black box.
-- LLM proposals are grounded against the indexed schema: extraction and binding are
-  deterministically validated so the model selects real tables/paths/codes rather than inventing them.
-- No autonomous agents.
-- Prioritize explainability, transparency, and demo reliability over breadth.
-- Keep semantic interpretation and schema grounding cleanly separated from SQL generation.
+It lets a user ask clinical questions such as:
+
+- "Show diabetic patients with recent encounters"
+- "Count patients with A1c above 9 in the last 6 months"
+- "Top 5 medications prescribed in the last 6 months"
+
+The system does not hide the query plan or SQL. It shows the extracted intent,
+the grounded schema bindings, the generated SQL, and the final results so the
+user can see exactly how the answer was produced.
+
+## What It Does
+
+The project currently supports an end-to-end runtime pipeline:
+
+1. Index a FHIR SQL Builder projection into a semantic registry.
+2. Extract a structured clinical query plan from natural language.
+3. Ground that plan against the indexed schema.
+4. Generate deterministic IRIS SQL from the grounded plan.
+5. Execute the SQL and render results.
+6. Ask for clarification or suggest projection extensions when the schema cannot
+   fully answer the question.
+
+There are two interfaces over the same runtime:
+
+- A Textual TUI with multi-turn conversation memory and clarification handling.
+- A headless CLI used for developer testing and debugging.
+
+## Design Principles
+
+- SQL is always shown to the user.
+- LLM output is schema-grounded and deterministically validated.
+- The runtime prefers explainability and demo reliability over broad SQL
+  expressiveness.
+- Schema indexing and semantic inference stay separate from runtime query
+  execution.
+- Unsupported queries fail explicitly instead of silently guessing.
+
+## Current Query Shape
+
+The current engine is strongest at:
+
+- Patient cohort discovery
+- Count queries
+- Root-resource ranked aggregates such as "top medications" or "most common
+  encounter statuses"
+- Relative time windows such as "last 6 months" or "last year"
+- Concept-driven filters such as diabetes, metformin, or A1c
+- Multi-turn refinements in the TUI
+
+The current SQL strategy is deliberately narrow:
+
+- The root resource anchors the query.
+- Root filters apply directly on the root table.
+- Non-root resources are correlated through `EXISTS`, typically via patient
+  identity.
+- Ranked queries group the root resource and order by count.
+
+Current limitations:
+
+- No general joins for projecting related-resource columns.
+- No sorting by related-resource columns.
+- No arbitrary column projection from correlated resources.
+- Query support is intentionally narrower than full SQL or full FHIR search.
+
+## Architecture
+
+### Indexing
+
+The indexing pipeline introspects a FHIR SQL Builder projection, parses FHIR
+paths from column metadata, infers physical and semantic relationships, and
+persists a semantic registry to `data/schema_registry.json`.
+
+No LLM is used in this stage.
+
+### Runtime
+
+The runtime query flow is:
+
+`extract -> bind -> (clarify | suggest projection -> clarify | run SQL)`
+
+- `extract`: LLM turns conversation history into a typed `QueryPlan`.
+- `bind`: LLM proposes schema mappings and deterministic validation turns them
+  into a `BoundPlan`.
+- `run SQL`: deterministic SQL generation and execution over IRIS.
+- `clarify`: the TUI can pause and resume when the schema-aware stage needs user
+  input.
+- `suggest projection`: when the schema is missing required resources or fields,
+  the runtime suggests what to add to the FHIR projection and re-index.
+
+The CLI and TUI share the same orchestrator and query graph, but the TUI is the
+intended demo interface.
 
 ## Stack
 
 - **Python 3.12**, managed with [uv](https://docs.astral.sh/uv/)
-- `intersystems-irispython` — official IRIS DB-API driver
-- OpenAI SDK — structured semantic extraction (resource selection)
-- Pydantic v2 — typed query-plan models
-- Typer + Textual + Rich — CLI and interactive analytics TUI
-- structlog — structured logging for the indexing pipeline
+- `intersystems-irispython` for IRIS DB-API access
+- OpenAI SDK for structured extraction and binding
+- LangGraph for multi-turn query orchestration
+- Pydantic v2 for typed query-plan models
+- Typer + Textual + Rich for the CLI and TUI
+- structlog for indexing/runtime logs
 
-## Current state
+## Usage
 
-The IRIS connectivity layer and the deterministic **schema indexing pipeline**
-are in place. The pipeline introspects a FHIR SQL Builder projection, parses the
-FHIR paths embedded in column descriptions, infers physical and semantic
-relationships, builds a semantic graph, and persists a JSON registry — with no
-LLM involvement.
+### 1. Index a schema
 
-The first runtime stage, **LLM-assisted semantic resource selection**, is also
-built: a natural-language question is turned into a compact context derived from
-the indexed registry, the LLM selects the relevant root resources (structured,
-validated output — it cannot invent resources), and the semantic graph is
-deterministically narrowed to those resources plus any bridge resources needed
-to connect them. The query-plan → SQL-generation layers are not yet built.
-
-- [config.py](config.py) — `IrisSettings` (pydantic-settings), env-driven with an `IRIS_` prefix.
-- [iris_client.py](iris_client.py) — thin DB-API wrapper; `run_query()` returns list-of-dict rows for result sets, else `rowcount`.
-- [main.py](main.py) — smoke test that runs `SELECT $ZVERSION`.
-- [app/](app/) — the indexing pipeline (introspection, FHIR-path parsing, semantic inference, graph, persistence), the runtime resource-selection layer ([app/runtime/](app/runtime/), [app/llm/](app/llm/)), and the Typer CLI and Textual TUI.
-
-## Indexing a schema
-
-Introspect a FHIR SQL Builder projection and write the semantic registry to
-`data/schema_registry.json`:
+Introspect a FHIR SQL Builder projection and persist the semantic registry:
 
 ```bash
-uv run iris index-schema TEST1 --namespace FHIRSERVER   # or python -m app.cli ...
-uv run iris tui                                          # interactive TUI; then: /index-schema TEST1 --namespace FHIRSERVER
+uv run iris index-schema TEST1 --namespace FHIRSERVER
+uv run iris tui
 ```
 
-`--namespace` overrides `IRIS_NAMESPACE` for the run (FHIR projections often live
-in a dedicated namespace such as `FHIRSERVER`, separate from the default `USER`).
-The pipeline reports counts of tables, columns, physical relationships, and
-semantic FHIR relationships, and renders the inferred resource graph. Every
-inferred relationship carries a `confidence` and a `rationale` for
-explainability. `Base`/infrastructure tables and system columns are excluded.
+In the TUI, run:
 
-## Asking questions
+```text
+/index-schema TEST1 --namespace FHIRSERVER
+```
 
-Once a schema has been indexed (the registry at `data/schema_registry.json` is
-the runtime source of truth), ask clinical questions in plain English. This runs
-LLM resource selection and renders the narrowed semantic subgraph; it does **not**
-yet generate or execute SQL. Requires `OPENAI_API_KEY` (see below); does **not**
-require a live IRIS connection, since it reads the persisted registry.
+`--namespace` overrides `IRIS_NAMESPACE` for that run. This is useful when FHIR
+projections live in a namespace such as `FHIRSERVER` instead of `USER`.
+
+### 2. Use the interactive TUI
 
 ```bash
-uv run iris query "Show diabetic patients with recent encounters"   # headless
-uv run iris tui                                                      # then type the question (no leading slash)
-make tui                                                             # shortcut for the TUI
+uv run iris tui
+make tui
 ```
 
-In the TUI, lines starting with `/` are commands (e.g. `/index-schema`); any
-other line is treated as a natural-language question. Selected resources, the
-relevant relationships, and the model's reasoning are printed. Use
-`iris query --registry <path>` to point at a non-default registry file.
+In the TUI:
+
+- lines starting with `/` are commands
+- all other input is treated as a natural-language clinical query
+- follow-up turns can refine the previous question
+- clarification prompts pause the graph and resume on reply
+
+Example flow:
+
+```text
+Show diabetic patients
+just the ones over 65
+count them
+```
+
+### 3. Developer CLI
+
+The CLI exists mainly for developer testing, debugging, and inspecting the
+runtime stages outside the TUI.
+
+```bash
+uv run iris query "Show diabetic patients with recent encounters"
+uv run iris query "Count patients with A1c above 9 in the last 6 months"
+uv run iris query "Top 5 medications prescribed in the last 6 months"
+```
+
+For answerable questions, the CLI prints:
+
+- the extracted plan
+- the grounded plan
+- the generated SQL
+- the results
+
+For infeasible questions, it prints:
+
+- the extracted plan
+- the partial grounded plan
+- missing capability/schema details
+- suggested FHIR resources or fields to project when available
 
 ## Setup
 
-**Prerequisites:** [uv](https://docs.astral.sh/uv/), Python 3.12, and a running
-**InterSystems IRIS for Health** instance.
+Prerequisites:
+
+- [uv](https://docs.astral.sh/uv/)
+- Python 3.12
+- A running InterSystems IRIS for Health instance
+- A FHIR SQL Builder projection to index
+- `OPENAI_API_KEY` for runtime extraction and binding
+
+Install dependencies and initialize local tooling:
 
 ```bash
-make install              # uv sync + install the pre-commit git hook
-cp .env.example .env      # then fill in your instance's connection details
-make run                  # run the IRIS connectivity smoke test
+make install
+cp .env.example .env
+make run
 ```
 
-### Connection settings
+`make run` is a connectivity smoke test that executes `SELECT $ZVERSION`.
 
-Configure via environment variables or a local `.env` file (all keys use the
-`IRIS_` prefix):
+### Connection Settings
+
+Configure IRIS access through environment variables or `.env`:
 
 | Variable         | Default     | Description             |
 | ---------------- | ----------- | ----------------------- |
@@ -98,29 +204,45 @@ Configure via environment variables or a local `.env` file (all keys use the
 | `IRIS_USERNAME`  | `_SYSTEM`   | Username                |
 | `IRIS_PASSWORD`  | `SYS`       | Password                |
 
-Resource selection additionally needs OpenAI credentials (same `.env` file):
+Configure the LLM runtime:
 
-| Variable         | Default        | Description                          |
-| ---------------- | -------------- | ------------------------------------ |
-| `OPENAI_API_KEY` | _(unset)_      | OpenAI API key for resource selection |
-| `OPENAI_MODEL`   | `gpt-5.4-nano` | Model used for structured extraction |
+| Variable         | Default        | Description                            |
+| ---------------- | -------------- | -------------------------------------- |
+| `OPENAI_API_KEY` | _(unset)_      | OpenAI API key                         |
+| `OPENAI_MODEL`   | `gpt-5.4-nano` | Model used for structured plan parsing |
+
+## Repository Map
+
+- [config.py](config.py): `IrisSettings` and env-driven configuration
+- [iris_client.py](iris_client.py): thin IRIS DB-API wrapper
+- [main.py](main.py): connectivity smoke test
+- [app/commands/](app/commands): CLI/TUI orchestration and rendering
+- [app/runtime/](app/runtime): extraction, binding, diagnosis, graph, and SQL
+  generation
+- [app/schema/](app/schema): indexing, parsing, graph building, and registry
+  persistence
+- [app/tui/](app/tui): interactive Textual interface
+- [data/schema_registry.json](data/schema_registry.json): persisted semantic
+  registry output
 
 ## Development
 
-Common tasks are wrapped in the `Makefile` (all run via `uv run`):
+Common tasks are wrapped in the `Makefile`:
 
 | Command          | Description                                    |
 | ---------------- | ---------------------------------------------- |
 | `make install`   | Sync dependencies and install the git hook     |
 | `make run`       | Run the IRIS connectivity smoke test           |
+| `make tui`       | Launch the interactive Textual TUI             |
 | `make lint`      | Lint with ruff                                 |
 | `make format`    | Format with ruff                               |
 | `make typecheck` | Type-check with pyright                        |
 | `make test`      | Run the test suite                             |
-| `make check`     | Run lint, typecheck, and tests (local CI gate) |
+| `make check`     | Run lint, typecheck, and tests                 |
 | `make precommit` | Run all pre-commit hooks across the repo       |
 | `make clean`     | Remove caches and build artifacts              |
 
-Run `make help` to list available targets. Pre-commit hooks (ruff lint +
-format, basic file checks, and pyright) run automatically on `git commit` once
-`make install` has been run.
+Run `make help` to list targets.
+
+The current automated test suite covers binding, FHIR path parsing, grounding,
+graph behavior, query formatting, and SQL generation.
