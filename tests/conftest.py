@@ -41,6 +41,12 @@ _COLUMNS = [
     _col("Encounter", "Status", "varchar", "Path: Encounter.status"),
     _col("Observation", "ID", "bigint"),
     _col("Observation", "Patient", "varchar", "Path: Observation.subject.reference"),
+    _col(
+        "Observation",
+        "ValueQuantityValue",
+        "decimal",
+        "Path: Observation.value.quantity.value",
+    ),
     _col("ObservationCodeCodings", "Observation", "bigint"),
     _col("ObservationCodeCodings", "Code", "varchar", "Path: code"),
     _col("ObservationCodeCodings", "Display", "varchar", "Path: display"),

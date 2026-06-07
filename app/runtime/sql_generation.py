@@ -34,7 +34,12 @@ from app.runtime.grounding import (
     resolve_column_path,
 )
 from app.runtime.models import BoundFilter, BoundPlan, BoundTemporal, Filter
-from app.schema.models.registry import SchemaRegistry, SemanticType, TableMetadata
+from app.schema.models.registry import (
+    RelationshipType,
+    SchemaRegistry,
+    SemanticType,
+    TableMetadata,
+)
 
 # FHIR SQL Builder projects each resource's row id as ``ID`` (the column that
 # every physical FK references); it carries no FHIR path so it is absent from the
@@ -301,7 +306,10 @@ def _apply_filter(
             group = group_for(bf.table)
             group.predicates.append(clause)
             group.params.extend(clause_params)
-        return
+        if not (bf.column_path and flt.operator and flt.value is not None):
+            return
+        # Fall through: concept filter also carries a scalar value comparison
+        # (e.g. A1c concept match AND value.quantity.value > 9).
 
     # Target table/alias and where the predicate + params land.
     if is_root:
@@ -332,9 +340,26 @@ def _apply_filter(
     predicate, param = _scalar_predicate(flt, col)
     if predicate is None:
         return
-    preds.append(f'{alias}."{col.column}" {predicate}')
-    if param is not None:
-        sink.append(param)
+    if col.table == bf.table:
+        preds.append(f'{alias}."{col.column}" {predicate}')
+        if param is not None:
+            sink.append(param)
+    else:
+        # Column lives on a nested child table (e.g. value.quantity.value on
+        # ObservationValueQuantitys). Emit a nested EXISTS rather than a
+        # cross-table column reference.
+        fk_col = _child_fk_column(registry, col.table, bf.table)
+        if fk_col is None:
+            return
+        child_alias = f"{alias}v"
+        clause = (
+            f"EXISTS (SELECT 1 FROM {_qualify(registry, col.table)} {child_alias} "
+            f'WHERE {child_alias}."{fk_col}" = {alias}."{_ID_COLUMN}" '
+            f'AND {child_alias}."{col.column}" {predicate})'
+        )
+        preds.append(clause)
+        if param is not None:
+            sink.append(param)
 
 
 def _scalar_predicate(flt: Filter, col: ColumnRef) -> tuple[str | None, Any]:
@@ -379,6 +404,20 @@ def _apply_temporal(
         group = group_for(bt.table)
         group.predicates.append(f'{group.alias}."{col.column}" >= ?')
         group.params.append(cutoff)
+
+
+def _child_fk_column(
+    registry: SchemaRegistry, child_table: str, parent_table: str
+) -> str | None:
+    """FK column on child_table that references parent_table.ID."""
+    for rel in registry.relationships:
+        if (
+            rel.relationship_type == RelationshipType.PHYSICAL_FOREIGN_KEY
+            and rel.source_table == child_table
+            and rel.target_table == parent_table
+        ):
+            return rel.source_column
+    return None
 
 
 def _coding_predicate(

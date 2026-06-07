@@ -96,6 +96,40 @@ def test_concept_filter_emits_nested_exists_with_system_code_pairs(registry):
     assert sql.params == ["http://loinc.org", "4548-4"]
 
 
+def test_concept_filter_with_value_comparison_emits_both_predicates(registry):
+    # A1c > 9: concept resolves to LOINC code (coding EXISTS) AND value > 9 (scalar).
+    codings = lookup_codes("a1c")
+    bound = BoundPlan(
+        intent="list",
+        resource_tables={"Patient": "Patient", "Observation": "Observation"},
+        filters=[
+            BoundFilter(
+                filter=Filter(
+                    resource="Observation",
+                    concept="a1c",
+                    operator=">",
+                    value=9,
+                ),
+                table="Observation",
+                column_path="Observation.value.quantity.value",
+                codings=codings,
+            )
+        ],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    # The coding EXISTS must be present.
+    assert '"TEST1"."ObservationCodeCodings" r0c' in sql.sql
+    assert '(r0c."System" = ? AND r0c."Code" = ?)' in sql.sql
+    # The value comparison must be a nested EXISTS into the child table, not a
+    # bare column reference on the Observation alias (which IRIS would reject).
+    assert '"TEST1"."Observation"' in sql.sql  # there IS an Observation EXISTS group
+    assert "ValueQuantityValue" in sql.sql  # the physical column is referenced
+    assert "> ?" in sql.sql
+    assert sql.params == ["http://loinc.org", "4548-4", 9]
+
+
 def test_patient_attribute_filter(registry):
     bound = BoundPlan(
         intent="list",

@@ -162,6 +162,14 @@ def resolve_bound_plan(
         if fb and fb.column_path and fb.column_path in table_paths.get(table, set()):
             column_path = fb.column_path
         codings = lookup_codes(f.concept) if f.concept else []
+        # Deterministic fallback: concept filter with a value comparison needs the
+        # measured-value path (e.g. A1c > 9 → Observation.value.quantity.value).
+        # The LLM may return null or the wrong path format; scan the schema directly.
+        if codings and f.operator and f.value is not None and column_path is None:
+            for p in sorted(table_paths.get(table, set())):
+                if p.endswith(".value.quantity.value"):
+                    column_path = p
+                    break
         if f.concept and not codings:
             missing.append(f"concept '{f.concept}' is not in the coding dictionary")
             continue
