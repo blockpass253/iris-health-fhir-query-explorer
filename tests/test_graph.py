@@ -39,7 +39,7 @@ async def test_feasible_turn_executes_and_summarizes(monkeypatch, registry):
     async def fake_extract(history):
         return QueryPlan(intent="list", resources=["Patient"])
 
-    async def fake_bind(plan, reg):
+    async def fake_bind(plan, reg, history=None):
         return _feasible_bound()
 
     monkeypatch.setattr(graph_mod, "extract_plan", fake_extract)
@@ -63,7 +63,7 @@ async def test_history_accumulates_across_turns(monkeypatch, registry):
         seen_lengths.append(len(history))
         return QueryPlan(intent="list", resources=["Patient"])
 
-    async def fake_bind(plan, reg):
+    async def fake_bind(plan, reg, history=None):
         return _feasible_bound()
 
     monkeypatch.setattr(graph_mod, "extract_plan", fake_extract)
@@ -82,16 +82,22 @@ async def test_history_accumulates_across_turns(monkeypatch, registry):
     assert len(state["messages"]) == 4
 
 
-async def test_clarification_interrupts_then_resumes(monkeypatch, registry):
-    calls = {"n": 0}
+async def test_binding_clarification_interrupts_then_resumes(monkeypatch, registry):
+    bind_calls = {"n": 0}
+    bind_histories: list[int] = []
 
     async def fake_extract(history):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return QueryPlan(clarifying_question="Which patients?")
         return QueryPlan(intent="list", resources=["Patient"])
 
-    async def fake_bind(plan, reg):
+    async def fake_bind(plan, reg, history=None):
+        bind_calls["n"] += 1
+        bind_histories.append(len(history or []))
+        if bind_calls["n"] == 1:
+            return BoundPlan(
+                intent="list",
+                feasibility=Feasibility(can_answer=True),
+                clarifying_question="Should a missing DeceasedDateTime count as alive?",
+            )
         return _feasible_bound()
 
     monkeypatch.setattr(graph_mod, "extract_plan", fake_extract)
@@ -101,20 +107,22 @@ async def test_clarification_interrupts_then_resumes(monkeypatch, registry):
     config = _config()
 
     paused = await graph.ainvoke(
-        {"messages": [{"role": "user", "content": "show some"}]}, config
+        {"messages": [{"role": "user", "content": "alive diabetic patients"}]}, config
     )
-    assert paused["__interrupt__"][0].value["question"] == "Which patients?"
+    value = paused["__interrupt__"][0].value
+    assert value["question"] == "Should a missing DeceasedDateTime count as alive?"
+    # Rendered as a plain ask, not a schema gap.
+    assert value["missing"] == []
+    assert value["suggestions"] == []
 
-    resumed = await graph.ainvoke(Command(resume="diabetic ones"), config)
+    resumed = await graph.ainvoke(Command(resume="yes, treat missing as alive"), config)
     assert resumed.get("__interrupt__") is None
     assert resumed["rows"] == [{"x": 1}]
-    # extract ran twice (initial + after the clarification loop).
-    assert calls["n"] == 2
-    # The clarification question is recorded as an assistant turn so the
-    # transcript alternates instead of stacking two user turns.
+    # Bind ran twice; the second run saw the transcript (so it won't re-ask).
+    assert bind_calls["n"] == 2
+    assert bind_histories[1] > bind_histories[0]
     roles = [m["role"] for m in resumed["messages"]]
     assert roles == ["user", "assistant", "user", "assistant"]
-    assert resumed["messages"][1]["content"] == "Which patients?"
 
 
 def _infeasible_bound() -> BoundPlan:
@@ -128,7 +136,7 @@ async def test_infeasible_binding_triggers_clarification(monkeypatch, registry):
     async def fake_extract(history):
         return QueryPlan(intent="list", resources=["Patient"])
 
-    async def fake_bind(plan, reg):
+    async def fake_bind(plan, reg, history=None):
         return _infeasible_bound()
 
     async def fake_diagnose(plan, bound, view, history):
@@ -156,7 +164,7 @@ async def test_infeasible_binding_surfaces_projection_suggestions(
     async def fake_extract(history):
         return QueryPlan(intent="list", resources=["Patient"])
 
-    async def fake_bind(plan, reg):
+    async def fake_bind(plan, reg, history=None):
         return _infeasible_bound()
 
     async def fake_diagnose(plan, bound, view, history):
@@ -191,7 +199,7 @@ async def test_diagnosis_failure_degrades_gracefully(monkeypatch, registry):
     async def fake_extract(history):
         return QueryPlan(intent="list", resources=["Patient"])
 
-    async def fake_bind(plan, reg):
+    async def fake_bind(plan, reg, history=None):
         return _infeasible_bound()
 
     async def boom(plan, bound, view, history):

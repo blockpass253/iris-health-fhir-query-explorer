@@ -42,13 +42,20 @@ _OPERATORS = {">", ">=", "<", "<=", "=", "!="}
 _TRUE_VALUES = {"true", "yes"}
 _FALSE_VALUES = {"false", "no"}
 
+# Columns where a numeric `= 0` / `= 1` comparison is meaningless, so the
+# extractor's 0/1 for a boolean (e.g. deceased) is safe to read as a presence
+# test rather than a literal value.
+_TEMPORAL_TYPES = {SemanticType.DATE, SemanticType.DATETIME}
 
-def _as_bool(value: Any) -> bool | None:
+
+def _as_bool(value: Any, *, numeric_ok: bool = False) -> bool | None:
     """Interpret a filter value as a boolean, or ``None`` if it isn't one.
 
-    Restricted to actual booleans and the true/false-ish strings the extractor
-    emits — numeric 0/1 is intentionally excluded so genuine numeric filters are
-    never mistaken for presence tests.
+    Restricted to actual booleans and true/false-ish strings. Numeric 0/1 is
+    excluded by default so genuine numeric filters are never mistaken for
+    presence tests; pass ``numeric_ok=True`` for columns where numeric equality
+    is meaningless (e.g. a date), so the extractor's 0/1 for false/true is
+    honored instead of becoming a literal ``= 0``.
     """
     if isinstance(value, bool):
         return value
@@ -58,6 +65,11 @@ def _as_bool(value: Any) -> bool | None:
             return True
         if lowered in _FALSE_VALUES:
             return False
+        if numeric_ok and lowered in {"0", "1"}:
+            return lowered == "1"
+        return None
+    if isinstance(value, (int, float)) and numeric_ok and value in (0, 1):
+        return bool(value)
     return None
 
 
@@ -65,7 +77,7 @@ def _presence_test(flt: Filter, col: ColumnRef) -> bool | None:
     """Whether a boolean filter on a non-boolean column tests element presence."""
     if col.semantic_type == SemanticType.BOOLEAN:
         return None
-    truthy = _as_bool(flt.value)
+    truthy = _as_bool(flt.value, numeric_ok=col.semantic_type in _TEMPORAL_TYPES)
     if truthy is None:
         return None
     op = flt.operator or "="
@@ -201,6 +213,14 @@ def _apply_filter(
     present = _presence_test(flt, col)
     if present is not None:
         predicate, param = f"IS {'NOT NULL' if present else 'NULL'}", None
+    elif flt.value is None:
+        op = flt.operator or "="
+        if op == "=":
+            predicate, param = "IS NULL", None
+        elif op == "!=":
+            predicate, param = "IS NOT NULL", None
+        else:
+            return
     else:
         op = flt.operator if flt.operator in _OPERATORS else "="
         predicate, param = f"{op} ?", flt.value

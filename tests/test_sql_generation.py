@@ -22,7 +22,24 @@ from app.runtime.models import (
     Filter,
     TemporalConstraint,
 )
-from app.runtime.sql_generation import SqlQuery, generate_sql, render_sql
+from app.runtime.sql_generation import SqlQuery, _as_bool, generate_sql, render_sql
+
+
+def test_as_bool_only_reads_numbers_as_bool_when_numeric_ok():
+    # Words/booleans are always boolean-ish.
+    assert _as_bool("false") is False
+    assert _as_bool(True) is True
+    # Numeric 0/1 is a literal value by default (genuine numeric filters)...
+    assert _as_bool(0) is None
+    assert _as_bool(1) is None
+    assert _as_bool("0") is None
+    # ...but a presence test on a date column opts into the 0/1 reading.
+    assert _as_bool(0, numeric_ok=True) is False
+    assert _as_bool(1, numeric_ok=True) is True
+    assert _as_bool("0", numeric_ok=True) is False
+    # Genuine non-boolean numbers never collapse to a presence test.
+    assert _as_bool(42, numeric_ok=True) is None
+
 
 # --- Column lookups ----------------------------------------------------------
 
@@ -138,6 +155,80 @@ def test_deceased_filter_emits_not_null_presence_check(registry):
                     path="deceased",
                     operator="=",
                     value="true",
+                ),
+                table="Patient",
+                column_path="Patient.deceasedDateTime",
+            )
+        ],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert 'p."DeceasedDateTime" IS NOT NULL' in sql.sql
+    assert sql.params == []
+
+
+def test_deceased_filter_with_dropped_value_degrades_to_null_check(registry):
+    # If the extractor drops the boolean (value=None) on a polymorphic date
+    # column, a bare '=' must degrade to IS NULL rather than emit a dangling '?'
+    # placeholder (which previously crashed render_sql with a param mismatch).
+    bound = BoundPlan(
+        intent="list",
+        resource_tables={"Patient": "Patient"},
+        filters=[
+            BoundFilter(
+                filter=Filter(
+                    resource="Patient",
+                    path="deceased",
+                    operator="=",
+                    value=None,
+                ),
+                table="Patient",
+                column_path="Patient.deceasedDateTime",
+            )
+        ],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert 'p."DeceasedDateTime" IS NULL' in sql.sql
+    assert sql.params == []
+    # render_sql validates placeholder/param parity; it must not raise.
+    assert "?" not in render_sql(sql)
+
+
+def test_deceased_filter_with_integer_zero_is_presence_check(registry):
+    # The extractor often encodes deceased=false as the integer 0. On a date
+    # column that must read as IS NULL (alive), not a literal `= 0`.
+    bound = BoundPlan(
+        intent="list",
+        resource_tables={"Patient": "Patient"},
+        filters=[
+            BoundFilter(
+                filter=Filter(
+                    resource="Patient", path="deceased", operator="=", value=0
+                ),
+                table="Patient",
+                column_path="Patient.deceasedDateTime",
+            )
+        ],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert 'p."DeceasedDateTime" IS NULL' in sql.sql
+    assert sql.params == []
+    assert "= 0" not in render_sql(sql)
+
+
+def test_deceased_filter_with_integer_one_is_not_null_presence_check(registry):
+    bound = BoundPlan(
+        intent="list",
+        resource_tables={"Patient": "Patient"},
+        filters=[
+            BoundFilter(
+                filter=Filter(
+                    resource="Patient", path="deceased", operator="=", value=1
                 ),
                 table="Patient",
                 column_path="Patient.deceasedDateTime",

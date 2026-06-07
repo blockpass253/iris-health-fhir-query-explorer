@@ -65,6 +65,7 @@ class BindingDraft(BaseModel):
     resource_bindings: list[ResourceBinding] = Field(default_factory=list)
     filter_bindings: list[FilterBinding] = Field(default_factory=list)
     temporal_bindings: list[TemporalBinding] = Field(default_factory=list)
+    clarifying_question: str | None = None
     notes: str | None = None
 
 
@@ -157,10 +158,27 @@ def resolve_bound_plan(
         filters=bound_filters,
         temporal_constraints=bound_temporal,
         feasibility=Feasibility(can_answer=not missing, missing=missing),
+        clarifying_question=draft.clarifying_question or None,
     )
 
 
-async def bind_plan(plan: QueryPlan, registry: SchemaRegistry) -> BoundPlan:
+def _render_transcript(history: list[dict[str, str]]) -> str:
+    """Compact role-prefixed transcript so binding can resolve a prior clarification.
+
+    Binding is otherwise driven only by the plan; the transcript lets it ask a
+    schema-aware clarifying question and, crucially, *not* re-ask one the user has
+    already answered earlier in the conversation.
+    """
+    return "\n".join(
+        f"{m.get('role', '')}: {m.get('content', '')}" for m in history if m
+    )
+
+
+async def bind_plan(
+    plan: QueryPlan,
+    registry: SchemaRegistry,
+    history: list[dict[str, str]] | None = None,
+) -> BoundPlan:
     """Bind ``plan`` to ``registry`` via the LLM, then validate deterministically."""
     view = build_schema_view(registry)
     settings = get_llm_settings()
@@ -170,6 +188,8 @@ async def bind_plan(plan: QueryPlan, registry: SchemaRegistry) -> BoundPlan:
         f"Plan (JSON):\n{plan.model_dump_json()}\n\n"
         f"Schema view (JSON):\n{view.model_dump_json()}"
     )
+    if history:
+        user_content += f"\n\nConversation so far:\n{_render_transcript(history)}"
     messages: ResponseInputParam = [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": user_content},

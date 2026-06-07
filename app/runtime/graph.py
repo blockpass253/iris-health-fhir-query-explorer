@@ -19,11 +19,12 @@ State shape:
 - per-turn working fields (``plan``/``bound``/``sql``/``rows``/``error``):
   overwritten each turn; the caller renders them from the final state.
 
-Flow:: ``extract → (clarify | bind) → (suggest_projection → clarify | sql) →
+Flow:: ``extract → bind → (clarify | suggest_projection → clarify | run_sql) →
 finalize → END`` where ``clarify`` interrupts for input and loops back to
-``extract``. On an infeasible bind, ``suggest_projection`` adds an advisory LLM
-stage that names the FHIR resources/fields the user could project to close the
-gap, which ``clarify`` folds into its question.
+``extract``. Clarifications originate only at ``bind`` (the schema-aware stage):
+either an explicit ``clarifying_question`` it raises, or — on an infeasible bind —
+``suggest_projection`` names the FHIR resources/fields the user could project to
+close the gap, which ``clarify`` folds into its question. Extraction never asks.
 """
 
 import operator
@@ -107,19 +108,18 @@ def build_query_graph(registry: SchemaRegistry) -> CompiledStateGraph:
 
     async def extract(state: ConversationState) -> dict[str, Any]:
         plan = await extract_plan(state["messages"])
-        log.info(
-            "graph.extract",
-            intent=plan.intent,
-            resources=plan.resources,
-            clarify=bool(plan.clarifying_question),
-        )
+        log.info("graph.extract", intent=plan.intent, resources=plan.resources)
         return {"plan": plan}
 
     async def bind(state: ConversationState) -> dict[str, Any]:
         plan = state.get("plan")
         assert plan is not None  # routed here only after a successful extract
-        bound = await bind_plan(plan, registry)
-        log.info("graph.bind", can_answer=bound.feasibility.can_answer)
+        bound = await bind_plan(plan, registry, state["messages"])
+        log.info(
+            "graph.bind",
+            can_answer=bound.feasibility.can_answer,
+            clarify=bool(bound.clarifying_question),
+        )
         return {"bound": bound}
 
     async def suggest_projection(state: ConversationState) -> dict[str, Any]:
@@ -145,11 +145,10 @@ def build_query_graph(registry: SchemaRegistry) -> CompiledStateGraph:
         No work happens before ``interrupt()`` so resuming (which re-runs the
         node from the top) is side-effect-free.
         """
-        plan = state.get("plan")
         bound = state.get("bound")
         suggestions: list[ProjectionSuggestion] = []
-        if plan is not None and plan.clarifying_question:
-            question = plan.clarifying_question
+        if bound is not None and bound.clarifying_question:
+            question = bound.clarifying_question
             missing: list[str] = []
         elif bound is not None:
             missing = bound.feasibility.missing
@@ -213,14 +212,12 @@ def build_query_graph(registry: SchemaRegistry) -> CompiledStateGraph:
         summary = _plan_summary(plan, bound, state.get("rows"))
         return {"messages": [{"role": "assistant", "content": summary}]}
 
-    def route_after_extract(state: ConversationState) -> Literal["clarify", "bind"]:
-        plan = state.get("plan")
-        return "clarify" if plan and plan.clarifying_question else "bind"
-
     def route_after_bind(
         state: ConversationState,
-    ) -> Literal["suggest_projection", "run_sql"]:
+    ) -> Literal["clarify", "suggest_projection", "run_sql"]:
         bound = state.get("bound")
+        if bound and bound.clarifying_question:
+            return "clarify"
         if bound and bound.feasibility.can_answer:
             return "run_sql"
         return "suggest_projection"
@@ -234,9 +231,9 @@ def build_query_graph(registry: SchemaRegistry) -> CompiledStateGraph:
         .add_node("run_sql", run_sql)
         .add_node("finalize", finalize)
         .add_edge(START, "extract")
-        .add_conditional_edges("extract", route_after_extract, ["clarify", "bind"])
+        .add_edge("extract", "bind")
         .add_conditional_edges(
-            "bind", route_after_bind, ["suggest_projection", "run_sql"]
+            "bind", route_after_bind, ["clarify", "suggest_projection", "run_sql"]
         )
         .add_edge("suggest_projection", "clarify")
         .add_edge("run_sql", "finalize")

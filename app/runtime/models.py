@@ -61,8 +61,6 @@ class QueryPlan(BaseModel):
     resources: list[str] = Field(default_factory=list)
     filters: list[Filter] = Field(default_factory=list)
     temporal_constraints: list[TemporalConstraint] = Field(default_factory=list)
-    # Set only when the question is too ambiguous to plan
-    clarifying_question: str | None = None
 
 
 class Coding(BaseModel):
@@ -115,3 +113,4 @@ class BoundPlan(BaseModel):
     filters: list[BoundFilter] = Field(default_factory=list)
     temporal_constraints: list[BoundTemporal] = Field(default_factory=list)
     feasibility: Feasibility = Field(default_factory=Feasibility)
+    clarifying_question: str | None = None

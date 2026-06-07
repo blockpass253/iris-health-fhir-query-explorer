@@ -88,6 +88,34 @@ def test_polymorphic_attribute_binds_to_projected_path(registry):
     assert deceased.column_path == "Patient.deceasedDateTime"
 
 
+def test_binding_clarifying_question_threads_through(registry):
+    view = build_schema_view(registry)
+    question = "Should a missing DeceasedDateTime count as alive?"
+    plan = QueryPlan(
+        intent="list",
+        resources=["Patient"],
+        filters=[
+            Filter(resource="Patient", path="deceased", operator="=", value="false")
+        ],
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Patient", table="Patient")],
+        filter_bindings=[
+            FilterBinding(
+                resource="Patient",
+                path="deceased",
+                table="Patient",
+                column_path="Patient.deceasedDateTime",
+            )
+        ],
+        clarifying_question=question,
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert bound.clarifying_question == question
+
+
 def test_missing_resource_is_infeasible(registry):
     view = build_schema_view(registry)
     plan = QueryPlan(
