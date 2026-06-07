@@ -93,13 +93,17 @@ def resolve_bound_plan(
 
     rb_by_resource = {_norm(rb.resource): rb for rb in draft.resource_bindings}
     resource_tables: dict[str, str] = {}
+    missing_resources: set[str] = set()
     for resource in plan.resources:
         rb = rb_by_resource.get(_norm(resource))
-        table = real_table(rb.table) if rb else None
+        # Fall back to an exact resource-name match when the LLM fails to bind a
+        # table that is plainly present in the view (observed with weaker models).
+        table = (real_table(rb.table) if rb else None) or real_table(resource)
         if table:
             resource_tables[resource] = table
         else:
             missing.append(f"resource '{resource}' is not in the indexed schema")
+            missing_resources.add(_norm(resource))
 
     fb_exact = {}
     fb_by_resource = {}
@@ -115,7 +119,12 @@ def resolve_bound_plan(
         table = proposed or resource_tables.get(f.resource)
         label = f.concept or f.path or f.resource
         if not table:
-            missing.append(f"filter '{label}' has no matching resource in the schema")
+            # Don't restate the gap when the filter's resource is already flagged
+            # missing, that resource entry is the single root cause.
+            if _norm(f.resource) not in missing_resources:
+                missing.append(
+                    f"filter '{label}' has no matching resource in the schema"
+                )
             continue
         column_path = None
         if fb and fb.column_path and fb.column_path in table_paths.get(table, set()):

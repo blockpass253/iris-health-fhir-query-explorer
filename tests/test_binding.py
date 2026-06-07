@@ -164,16 +164,57 @@ def test_unknown_concept_is_infeasible(registry):
 
 def test_hallucinated_table_is_rejected(registry):
     view = build_schema_view(registry)
-    plan = QueryPlan(intent="list", resources=["Patient"])
-    # The model invents a table that is not in the schema view.
+    plan = QueryPlan(intent="list", resources=["MedicationRequest"])
+    # The model invents a table that is not in the schema view, for a resource
+    # whose name also has no matching table.
     draft = BindingDraft(
-        resource_bindings=[ResourceBinding(resource="Patient", table="PatientProfile")]
+        resource_bindings=[
+            ResourceBinding(resource="MedicationRequest", table="MedRequests")
+        ]
     )
 
     bound = resolve_bound_plan(plan, draft, view)
 
     assert not bound.feasibility.can_answer
-    assert "Patient" not in bound.resource_tables
+    assert "MedicationRequest" not in bound.resource_tables
+
+
+def test_missing_resource_does_not_also_flag_its_filter(registry):
+    view = build_schema_view(registry)
+    # MedicationRequest is not in the schema; its filter fails only because of
+    # that. The missing list should name the resource once, not also the filter.
+    plan = QueryPlan(
+        intent="list",
+        resources=["MedicationRequest"],
+        filters=[Filter(resource="MedicationRequest", concept="metformin")],
+    )
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="MedicationRequest", table=None)],
+        filter_bindings=[
+            FilterBinding(resource="MedicationRequest", concept="metformin", table=None)
+        ],
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert not bound.feasibility.can_answer
+    assert bound.feasibility.missing == [
+        "resource 'MedicationRequest' is not in the indexed schema"
+    ]
+
+
+def test_unbound_resource_falls_back_to_exact_name_match(registry):
+    view = build_schema_view(registry)
+    plan = QueryPlan(intent="list", resources=["Patient"])
+    # The model fails to bind a table that is plainly present in the view.
+    draft = BindingDraft(
+        resource_bindings=[ResourceBinding(resource="Patient", table=None)]
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert bound.resource_tables["Patient"] == "Patient"
+    assert not any("Patient" in m for m in bound.feasibility.missing)
 
 
 def test_temporal_without_date_field_is_infeasible(registry):
