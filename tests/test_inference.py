@@ -113,16 +113,26 @@ def test_infrastructure_table_excluded(tables):
 
 
 def test_system_columns_excluded(tables):
-    # Only FHIR-path columns are retained; ID/bigint parent columns dropped.
+    # Root resources retain ID (no FHIR path); nested FK parent columns are dropped.
     assert {c.column_name for c in tables["Patient"].columns} == {
+        "ID",
         "BirthDate",
         "Gender",
         "FirstName",
     }
+    assert _semantic_type(tables, "Patient", "ID") == SemanticType.IDENTIFIER
     assert {c.column_name for c in tables["ConditionCodeCodings"].columns} == {
         "Code",
         "System",
     }
+
+
+def test_root_resources_have_id_column(tables):
+    for resource in ("Patient", "Condition", "Encounter", "Observation"):
+        id_cols = [c for c in tables[resource].columns if c.column_name.upper() == "ID"]
+        assert len(id_cols) == 1
+        assert id_cols[0].semantic_type == SemanticType.IDENTIFIER
+        assert tables[resource].columns[0].column_name.upper() == "ID"
 
 
 def test_resource_type_inference(tables):

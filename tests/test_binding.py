@@ -403,10 +403,9 @@ def test_rank_without_group_by_is_infeasible(registry):
     assert any("no grouping target" in m for m in bound.feasibility.missing)
 
 
-def test_non_correlatable_cross_resource_filter_is_infeasible(registry):
-    # Root is Encounter; a Patient-attribute filter cannot be correlated because
-    # Patient carries no patient reference (v1 routes correlation only through a
-    # resource's own patient reference).
+def test_patient_non_root_correlates_via_root_patient_ref(registry):
+    # Encounter root + Patient filter: Patient is the identity anchor, so it can
+    # always be correlated when the root (Encounter) holds a patient reference.
     view = build_schema_view(registry)
     plan = QueryPlan(
         intent="list",
@@ -433,8 +432,41 @@ def test_non_correlatable_cross_resource_filter_is_infeasible(registry):
 
     bound = resolve_bound_plan(plan, draft, view)
 
-    assert not bound.feasibility.can_answer
-    assert any("cannot be correlated" in m for m in bound.feasibility.missing)
+    assert bound.feasibility.can_answer
+    assert not any("cannot be correlated" in m for m in bound.feasibility.missing)
+
+
+def test_condition_root_with_patient_filter_is_feasible(registry):
+    # Condition root + Patient gender filter: the canonical case from the bug report.
+    # Condition.subject.reference links to Patient, so the join is valid.
+    view = build_schema_view(registry)
+    plan = QueryPlan(
+        intent="list",
+        root_resource="Condition",
+        resources=["Condition", "Patient"],
+        filters=[
+            Filter(resource="Patient", path="gender", operator="=", value="female")
+        ],
+    )
+    draft = BindingDraft(
+        resource_bindings=[
+            ResourceBinding(resource="Condition", table="Condition"),
+            ResourceBinding(resource="Patient", table="Patient"),
+        ],
+        filter_bindings=[
+            FilterBinding(
+                resource="Patient",
+                path="gender",
+                table="Patient",
+                column_path="Patient.gender",
+            )
+        ],
+    )
+
+    bound = resolve_bound_plan(plan, draft, view)
+
+    assert bound.feasibility.can_answer
+    assert bound.feasibility.missing == []
 
 
 # --- Projection (select_fields) ----------------------------------------------

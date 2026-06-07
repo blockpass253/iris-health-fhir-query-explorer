@@ -481,11 +481,26 @@ def _patient_link(
 ) -> str | None:
     """Correlate a non-root resource to the root through patient identity.
 
-    A Patient root is matched by id (``other.ref = 'Patient/' || r.ID``); a
-    non-patient root holds its own patient reference, so both sides compare the
-    same ``Patient/<id>`` string (``other.ref = r.<root patient ref>``).
+    Three cases:
+    - Non-root IS Patient: root holds the patient reference, so join from root side
+      (``r.<root_ref> = 'Patient/' || p.ID``).
+    - Patient root: non-root holds a patient reference matched against root ID
+      (``other.ref = 'Patient/' || r.ID``).
+    - Both non-Patient: both hold the same ``Patient/<id>`` string
+      (``other.ref = r.<root patient ref>``).
     """
-    ref = patient_reference_column(registry.tables[group.table])
+    group_meta = registry.tables[group.table]
+
+    if group_meta.inferred_resource_type == "Patient":
+        root_ref = patient_reference_column(root_table)
+        if root_ref is None:
+            return None
+        return (
+            f'{_ROOT_ALIAS}."{root_ref.column}" = '
+            f"'Patient/' || {group.alias}.\"{_ID_COLUMN}\""
+        )
+
+    ref = patient_reference_column(group_meta)
     if ref is None:
         return None
     if root_table.inferred_resource_type == "Patient":

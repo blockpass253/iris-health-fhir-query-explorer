@@ -425,6 +425,38 @@ def test_non_patient_root_correlates_other_resource_by_patient_ref(registry):
     assert sql.params == ["finished", "http://loinc.org", "4548-4"]
 
 
+def test_non_patient_root_with_patient_filter_generates_reverse_join(registry):
+    # Condition root + Patient gender filter: the join must anchor on the root's
+    # patient-reference column, not on Patient's (which doesn't exist).
+    # Expected: r."Patient" = 'Patient/' || p."ID"
+    bound = BoundPlan(
+        intent="list",
+        root_resource="Condition",
+        resource_tables={"Condition": "Condition", "Patient": "Patient"},
+        filters=[
+            BoundFilter(
+                filter=Filter(
+                    resource="Patient",
+                    path="gender",
+                    operator="=",
+                    value="female",
+                ),
+                table="Patient",
+                column_path="Patient.gender",
+            )
+        ],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert sql.sql.startswith("SELECT DISTINCT TOP 50 r.*")
+    assert 'FROM "TEST1"."Condition" r' in sql.sql
+    assert 'EXISTS (SELECT 1 FROM "TEST1"."Patient" r0' in sql.sql
+    assert 'r."Patient" = \'Patient/\' || r0."ID"' in sql.sql
+    assert 'r0."Gender" = ?' in sql.sql
+    assert sql.params == ["female"]
+
+
 def test_root_limit_overrides_default_list_cap(registry):
     bound = BoundPlan(
         intent="list",

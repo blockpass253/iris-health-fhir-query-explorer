@@ -230,7 +230,11 @@ def resolve_bound_plan(
         if not root_table or table == root_table or table in flagged:
             continue
         other = by_name.get(_norm(table))
-        if not (root_correlatable and other and other.has_patient_reference):
+        if not (
+            root_correlatable
+            and other
+            and (other.has_patient_reference or other.resource_type == "Patient")
+        ):
             missing.append(
                 f"{table} cannot be correlated to {root_table} through patient identity"
             )

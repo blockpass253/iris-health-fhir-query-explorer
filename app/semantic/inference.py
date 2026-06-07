@@ -9,7 +9,8 @@ Key conventions for FHIR SQL Builder projections:
 - Nested/child tables carry a physical FK to their parent root resource and have
   rootless FHIR paths (``coding.code``, ``reference``).
 - Tables with no FHIR-path columns at all are infrastructure (e.g. ``Base``) and
-  are excluded from the registry; system columns (no path) are likewise dropped.
+  are excluded from the registry; system columns (no path) are likewise dropped,
+  except the root resource primary-key ``ID`` column (no FHIR path in IRIS metadata).
 """
 
 from collections import Counter
@@ -29,6 +30,8 @@ from app.semantic.fhir_resources import match_resource
 
 # A parsed column pairs a raw column with its (optional) parsed FHIR path.
 ParsedColumn = tuple[RawColumn, ParsedFHIRPath | None]
+
+_ID_COLUMN = "ID"
 
 
 def parse_columns(columns: list[RawColumn]) -> dict[str, list[ParsedColumn]]:
@@ -90,13 +93,29 @@ def classify_semantic_type(
     return SemanticType.STRING
 
 
+def _root_id_column(parsed_cols: list[ParsedColumn]) -> ColumnMetadata | None:
+    """Return the root resource ``ID`` column when present without a FHIR path."""
+    for col, parsed in parsed_cols:
+        if parsed is not None or col.column_name.upper() != _ID_COLUMN:
+            continue
+        return ColumnMetadata(
+            column_name=col.column_name,
+            data_type=col.data_type,
+            fhir_path_raw=None,
+            parsed_fhir_path=None,
+            semantic_type=SemanticType.IDENTIFIER,
+        )
+    return None
+
+
 def build_tables(
     tables: list[RawTable], parsed_by_table: dict[str, list[ParsedColumn]]
 ) -> dict[str, TableMetadata]:
     """Build semantic table metadata, excluding infrastructure and system columns.
 
     A table with no FHIR-path columns is infrastructure (e.g. ``Base``) and is
-    omitted. Within a kept table, only columns carrying a FHIR path are retained.
+    omitted. Within a kept table, only columns carrying a FHIR path are retained,
+    plus the root resource ``ID`` column when present.
     """
     result: dict[str, TableMetadata] = {}
     for table in tables:
@@ -116,6 +135,10 @@ def build_tables(
             )
             for col, parsed in semantic_cols
         ]
+        if resource_type is not None:
+            id_col = _root_id_column(parsed_cols)
+            if id_col is not None:
+                columns = [id_col, *columns]
         tags = ["root_resource"] if resource_type else []
         result[table.table_name] = TableMetadata(
             table_name=table.table_name,
