@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install run tui lint fix-lint format typecheck test check precommit clean
+.PHONY: help install run tui iris-up iris-down iris-logs lint fix-lint format typecheck test check precommit clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -13,7 +13,16 @@ run: ## Run the IRIS connectivity smoke test
 	uv run python main.py
 
 tui: ## Launch the interactive Textual TUI
-	uv run iris tui
+	uv run iris-agent tui
+
+iris-up: ## Start the IRIS demo container via docker compose
+	docker compose up -d iris
+
+iris-down: ## Stop the IRIS demo container
+	docker compose down
+
+iris-logs: ## Tail the IRIS demo container logs
+	docker compose logs -f iris
 
 lint: ## Lint with ruff
 	uv run ruff check .

@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 iris = "app.cli:app"
+iris-agent = "app.cli:app"
 
 [build-system]
 requires = ["hatchling"]
