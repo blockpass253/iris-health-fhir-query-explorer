@@ -142,7 +142,7 @@ projections live in a namespace such as `FHIRSERVER` instead of `USER`.
 ### 2. Use the interactive TUI
 
 ```bash
-uv run iris tui
+uv run iris-agent tui
 make tui
 ```
 
@@ -172,6 +172,9 @@ uv run iris query "Count patients with A1c above 9 in the last 6 months"
 uv run iris query "Top 5 medications prescribed in the last 6 months"
 ```
 
+The packaged console entrypoints `iris` and `iris-agent` both point to the same
+CLI app.
+
 For answerable questions, the CLI prints:
 
 - the extracted plan
@@ -192,9 +195,13 @@ Prerequisites:
 
 - [uv](https://docs.astral.sh/uv/)
 - Python 3.12
-- A running InterSystems IRIS for Health instance
 - A FHIR SQL Builder projection to index
 - `OPENAI_API_KEY` for runtime extraction and binding
+
+You can connect either to your own IRIS instance or to the demo container
+defined in [compose.yaml](compose.yaml).
+
+### Local Python Setup
 
 Install dependencies and initialize local tooling:
 
@@ -206,6 +213,28 @@ make run
 
 `make run` is a connectivity smoke test that executes `SELECT $ZVERSION`.
 
+### Docker Demo IRIS
+
+The repository includes a Docker Compose service for a prebuilt IRIS demo
+image:
+
+```bash
+cp .env.example .env
+make iris-up
+make run
+```
+
+Useful Docker targets:
+
+- `make iris-up`: start the IRIS demo container in the background
+- `make iris-down`: stop and remove the Compose services
+- `make iris-logs`: tail the IRIS container logs
+
+The Compose service publishes these ports by default:
+
+- `1972` via `IRIS_PORT` for IRIS superserver access
+- `52773` via `IRIS_WEB_PORT` for the IRIS web apps
+
 ### Connection Settings
 
 Configure IRIS access through environment variables or `.env`:
@@ -214,9 +243,15 @@ Configure IRIS access through environment variables or `.env`:
 | ---------------- | ----------- | ----------------------- |
 | `IRIS_HOST`      | `localhost` | IRIS hostname           |
 | `IRIS_PORT`      | `1972`      | Superserver port        |
-| `IRIS_NAMESPACE` | `USER`      | Namespace to connect to |
+| `IRIS_NAMESPACE` | `FHIRSERVER` | Namespace to connect to |
 | `IRIS_USERNAME`  | `_SYSTEM`   | Username                |
 | `IRIS_PASSWORD`  | `SYS`       | Password                |
+
+Additional Docker-only port overrides:
+
+| Variable           | Default | Description                        |
+| ------------------ | ------- | ---------------------------------- |
+| `IRIS_WEB_PORT`    | `52773` | Published IRIS web application port  |
 
 Configure the LLM runtime:
 
@@ -230,6 +265,7 @@ Configure the LLM runtime:
 - [config.py](config.py): `IrisSettings` and env-driven configuration
 - [iris_client.py](iris_client.py): thin IRIS DB-API wrapper
 - [main.py](main.py): connectivity smoke test
+- [compose.yaml](compose.yaml): Docker Compose service for the demo IRIS image
 - [app/commands/](app/commands): CLI/TUI orchestration and rendering
 - [app/runtime/](app/runtime): extraction, binding, diagnosis, graph, and SQL
   generation
@@ -240,6 +276,7 @@ Configure the LLM runtime:
   registry output
 - [data/coding_dictionary.json](data/coding_dictionary.json): generated coding
   concept-to-code dictionary (produced by `index-schema`)
+- [scripts/](scripts): Docker snapshot and GHCR publishing helpers
 
 ## Development
 
