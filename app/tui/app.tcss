@@ -71,7 +71,6 @@ QueryTurn {
 .sql-panel {
     height: auto;
     border: round $primary;
-    border-title-color: $accent;
     padding: 0 1;
     margin: 1 0;
 }
@@ -83,9 +82,33 @@ QueryTurn {
 .results-panel {
     height: auto;
     border: round $success;
-    border-title-color: $success;
     padding: 0 1;
     margin: 1 0;
+}
+
+.panel-header {
+    height: auto;
+    align: center middle;
+    margin-bottom: 1;
+}
+
+.panel-title {
+    width: 1fr;
+    text-style: bold;
+}
+
+.sql-panel .panel-title {
+    color: $accent;
+}
+
+.results-panel .panel-title {
+    color: $success;
+}
+
+.panel-header Button {
+    margin: 0;
+    min-width: 8;
+    border: none !important;
 }
 
 .results-panel DataTable {
@@ -113,8 +136,4 @@ QueryTurn {
 .clarification-panel.-ask {
     border: heavy $accent;
     border-title-color: $accent;
-}
-
-Button {
-    margin: 1 0;
 }

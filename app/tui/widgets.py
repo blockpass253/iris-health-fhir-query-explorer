@@ -14,7 +14,14 @@ from rich.syntax import Syntax
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Button, Collapsible, DataTable, Rule, Static
+from textual.widgets import (
+    Button,
+    Collapsible,
+    DataTable,
+    LoadingIndicator,
+    Rule,
+    Static,
+)
 
 from app.commands.query import (
     QueryResult,
@@ -103,16 +110,17 @@ class SqlPanel(Vertical):
     def __init__(self, sql: SqlQuery) -> None:
         super().__init__(classes="sql-panel")
         self._display_sql = render_sql(sql)
-        self.border_title = "Generated SQL"
 
     def compose(self) -> ComposeResult:
+        with Horizontal(classes="panel-header"):
+            yield Static("Generated SQL", classes="panel-title")
+            yield Button("Copy", id="copy-sql", variant="primary", compact=True)
         yield Static(
             Syntax(
                 self._display_sql, "sql", word_wrap=True, background_color="default"
             ),
             classes="sql-code",
         )
-        yield Button("Copy SQL", id="copy-sql", variant="primary")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "copy-sql":
@@ -131,33 +139,45 @@ class ResultsPanel(Vertical):
         self._max_rows = max_rows
         rows = result.rows
         if intent == "count":
-            self.border_title = "Result"
+            self._title = "Result"
         elif isinstance(rows, list):
-            self.border_title = f"Results ({len(rows)} row(s))"
+            self._title = f"Results ({len(rows)} row(s))"
         else:
-            self.border_title = "Results"
+            self._title = "Results"
+
+    def _header(self, *, copyable: bool = False) -> ComposeResult:
+        with Horizontal(classes="panel-header"):
+            yield Static(self._title, classes="panel-title")
+            if copyable:
+                yield Button("Copy", id="copy-results", variant="success", compact=True)
 
     def compose(self) -> ComposeResult:
         result = self._result
         if result.error is not None:
+            yield from self._header()
             yield Static(Text(f"Execution failed: {result.error}", style="red"))
             return
 
         rows = result.rows
         if rows is None:
+            yield from self._header()
             yield Static(Text("Not executed.", style="dim"))
             return
         if isinstance(rows, int):  # non-SELECT rowcount (not expected for queries)
+            yield from self._header()
             yield Static(f"{rows} rows affected")
             return
         if self._intent == "count":
+            yield from self._header()
             value = next(iter(rows[0].values())) if rows else 0
             yield Static(Text.assemble(("Count: ", "bold"), (str(value), "green")))
             return
         if not rows:
+            yield from self._header()
             yield Static(Text("0 rows", style="dim"))
             return
 
+        yield from self._header(copyable=True)
         columns = list(rows[0].keys())
         table: DataTable[str] = DataTable(zebra_stripes=True, cursor_type="row")
         table.add_columns(*columns)
@@ -167,7 +187,6 @@ class ResultsPanel(Vertical):
         if len(rows) > self._max_rows:
             extra = len(rows) - self._max_rows
             yield Static(Text(f"… {extra} more row(s)", style="dim"))
-        yield Button("Copy results", id="copy-results")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id != "copy-results":
@@ -185,18 +204,64 @@ class ResultsPanel(Vertical):
 class QueryTurn(Collapsible):
     """One conversation turn: a collapsible card holding its tracker and outputs.
 
-    Starts expanded with just the step tracker; :meth:`populate` mounts the plan
-    detail (collapsed), SQL panel, and results once the graph finishes. Older turns
-    are collapsed by the app when a new question arrives.
+    Starts expanded with just the step tracker. As graph nodes complete during
+    streaming, ``begin_streaming`` / ``on_extract`` / ``on_bind`` / ``on_sql``
+    drive a spinner → content flow for each section. Extracted and grounded plan
+    sections stay expanded until the user collapses them. ``populate`` is a
+    one-shot fallback (e.g. on error). Older turns are collapsed by the app when
+    a new question arrives.
     """
 
     def __init__(self, question: str) -> None:
         self._question = question
         self.tracker = StepTracker()
+        self._extract_col: Collapsible | None = None
+        self._bound_col: Collapsible | None = None
+        self._running_col: Collapsible | None = None
         super().__init__(self.tracker, title=f"Q: {question}", collapsed=False)
 
     def _contents(self) -> Collapsible.Contents:
         return self.get_child_by_type(Collapsible.Contents)
+
+    async def begin_streaming(self) -> None:
+        """Mount the first spinner panel at query start."""
+        self._extract_col = Collapsible(
+            LoadingIndicator(), title="Extracted plan", collapsed=False
+        )
+        await self._contents().mount(self._extract_col)
+
+    async def on_extract(self, plan: QueryPlan) -> None:
+        """Replace extraction spinner with plan content, then open Ground spinner."""
+        assert self._extract_col is not None
+        await self._extract_col.query_one(LoadingIndicator).remove()
+        await self._extract_col.get_child_by_type(Collapsible.Contents).mount(
+            Static(Text.from_markup(format_extracted(plan)))
+        )
+        self._bound_col = Collapsible(
+            LoadingIndicator(), title="Grounded plan", collapsed=False
+        )
+        await self._contents().mount(self._bound_col)
+
+    async def on_bind(self, bound: BoundPlan) -> None:
+        """Replace grounding spinner with content; open query spinner if feasible."""
+        assert self._bound_col is not None
+        await self._bound_col.query_one(LoadingIndicator).remove()
+        await self._bound_col.get_child_by_type(Collapsible.Contents).mount(
+            Static(Text.from_markup(format_bound(bound)))
+        )
+        badge = "✓" if bound.feasibility.can_answer else "✗"
+        self.title = f"{badge} Q: {self._question}"
+        if bound.feasibility.can_answer:
+            self._running_col = Collapsible(
+                LoadingIndicator(), title="Running query…", collapsed=False
+            )
+            await self._contents().mount(self._running_col)
+
+    async def on_sql(self, sql: SqlQuery, result: QueryResult, intent: str) -> None:
+        """Remove the query spinner; mount SQL panel and results directly."""
+        assert self._running_col is not None
+        await self._running_col.remove()
+        await self._contents().mount(SqlPanel(sql), ResultsPanel(result, intent))
 
     async def populate(
         self,
@@ -205,17 +270,18 @@ class QueryTurn(Collapsible):
         sql: SqlQuery | None,
         result: QueryResult,
     ) -> None:
+        """One-shot fallback: mount all sections at once (skips streaming path)."""
         contents = self._contents()
         await contents.mount(
             Collapsible(
                 Static(Text.from_markup(format_extracted(plan))),
                 title="Extracted plan",
-                collapsed=True,
+                collapsed=False,
             ),
             Collapsible(
                 Static(Text.from_markup(format_bound(bound))),
                 title="Grounded plan",
-                collapsed=True,
+                collapsed=False,
             ),
         )
         if sql is not None:

@@ -5,6 +5,7 @@ deterministic pipeline end to end: introspect -> parse -> infer -> graph ->
 persist, returning the registry and a summary of counts.
 """
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -43,15 +44,21 @@ def run_index_schema(
     namespace: str | None = None,
     registry_path: Path = DEFAULT_REGISTRY_PATH,
     coding_dict_path: Path = DEFAULT_CODING_DICT_PATH,
+    progress: Callable[[str], None] | None = None,
 ) -> SchemaRegistry:
     """Index ``schema`` and persist the resulting semantic registry.
 
     Also samples coding ``system`` columns to record which terminologies each
     resource uses (reads data, not just metadata).
+
+    ``progress``, if provided, is called with a short status string at each
+    major stage so callers (e.g. the TUI) can surface live feedback.
     """
     settings = _resolve_settings(namespace)
     log.info("index.start", schema=schema, namespace=settings.namespace)
 
+    if progress:
+        progress(f"Querying {schema} schema metadata…")
     raw_tables = fetch_tables(schema, settings=settings)
     raw_columns = fetch_columns(schema, settings=settings)
     raw_fks = fetch_foreign_keys(schema, settings=settings)
@@ -62,10 +69,17 @@ def run_index_schema(
         foreign_keys=len(raw_fks),
     )
 
+    if progress:
+        progress(f"Found {len(raw_tables)} tables — building semantic model…")
     parsed_by_table = parse_columns(raw_columns)
     tables = build_tables(raw_tables, parsed_by_table)
+
+    if progress:
+        progress("Profiling coding systems…")
     profile_coding_systems(tables, schema, settings=settings)
 
+    if progress:
+        progress("Profiling terminology entries…")
     db_systems = profile_coding_entries(tables, schema, settings=settings)
     coding_dict = CodingDictionary(
         schema_name=schema,
@@ -116,6 +130,8 @@ def run_index_schema(
         stats=stats,
     )
 
+    if progress:
+        progress("Persisting registry…")
     written = save_registry(registry, registry_path)
     log.info("registry.written", path=str(written))
     return registry
