@@ -69,6 +69,8 @@ def classify_semantic_type(
         return SemanticType.DATETIME
     if terminal.endswith("date"):
         return SemanticType.DATE
+    if terminal in ("start", "end") and "period" in parsed.segments:
+        return SemanticType.DATETIME
     if terminal == "code":
         return SemanticType.CODE
     if terminal in ("system", "display"):
