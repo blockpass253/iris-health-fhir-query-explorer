@@ -121,10 +121,20 @@ This runs a simple `SELECT $ZVERSION` smoke test.
 ### 5. Index the FHIR SQL Builder projection
 
 ```bash
-uv run iris index-schema BASIC --namespace FHIRSERVER
+uv run iris index-schema MEDICATIONS --namespace FHIRSERVER
 ```
 
 This builds the local semantic registry used at runtime and writes it to `data/schema_registry.json`.
+
+The demo image ships with three projections (see [Available projections](#available-projections)):
+
+| Projection | Resources | Notes |
+| --- | --- | --- |
+| `BASIC` | Patient, Encounter, Observation, Condition | Minimal fields only |
+| `BASICWITHDATES` | Patient, Encounter, Observation, Condition | Includes dates and other useful fields |
+| `MEDICATIONS` | Patient, Encounter, Observation, Condition, MedicationRequest | Same as BasicWithDates plus medications |
+
+Use `MEDICATIONS` for the fullest demo experience. Use `BASIC` if you only want to verify connectivity.
 
 ### 6. Launch the interactive demo
 
@@ -263,7 +273,7 @@ The demo is currently strongest at:
 - count queries
 - top-N aggregate questions
 - relative time windows such as "last 6 months"
-- concept-driven filters such as diabetes, metformin, or A1c
+- concept-driven filters driven by the coding dictionary built from the indexed projection (diabetes, A1c, medications, and whatever terminologies your projection contains)
 - multi-turn refinement in the TUI
 
 Current limitations:
@@ -304,12 +314,22 @@ LLM settings:
 | `make install` | Install Python dependencies |
 | `make run` | IRIS connectivity smoke test |
 | `make tui` | Launch the interactive Textual UI |
-| `uv run iris index-schema BASIC` | Build the semantic registry |
+| `uv run iris index-schema <PROJECTION>` | Build the semantic registry for a projection |
 | `uv run iris query "<question>"` | Run a one-shot query from the CLI |
 
-### Notes about the demo image
+### Available projections
 
-The Docker image is a prebuilt IRIS snapshot used for the contest demo. It already contains the IRIS/FHIR environment and the `BASIC` projection used by this app.
+The Docker image is a prebuilt IRIS snapshot that ships with three FHIR SQL Builder projections in the `FHIRSERVER` namespace:
+
+| Projection | Resources | Description |
+| --- | --- | --- |
+| `BASIC` | Patient, Encounter, Observation, Condition | A minimal projection with a small set of fields. Good for verifying connectivity. |
+| `BASICWITHDATES` | Patient, Encounter, Observation, Condition | Extends `BASIC` with date fields (e.g. `effectiveDateTime`, `period.start`) and other useful attributes. Enables time-window queries. |
+| `MEDICATIONS` | Patient, Encounter, Observation, Condition, MedicationRequest | Everything in `BASICWITHDATES` plus the `MedicationRequest` resource. Enables medication queries such as "top 5 medications prescribed in the last 6 months". |
+
+Run `uv run iris index-schema <PROJECTION> --namespace FHIRSERVER` to build the registry for the projection you want to use.
+
+### Notes about the demo image
 
 This repository focuses on the query-exploration layer:
 
