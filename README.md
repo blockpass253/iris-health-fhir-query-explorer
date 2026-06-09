@@ -142,13 +142,120 @@ Use `MEDICATIONS` for the fullest demo experience. Use `BASIC` if you only want 
 make tui
 ```
 
-Then ask questions such as:
+Then try any of the questions in the next section.
 
-- `Show diabetic patients`
-- `Only the ones over 65`
-- `Count them`
-- `Show A1c observations from the last year`
-- `Top 5 medications prescribed in the last 6 months`
+---
+
+## What to Try
+
+All questions below work with the `MEDICATIONS` projection (the recommended starting point).
+Multi-turn refinement works in the TUI — each follow-up message refines the active query plan rather than starting a new one.
+
+### Patient cohort queries
+
+```
+Show diabetic patients
+Show diabetic patients taking metformin
+Show patients with recent encounters
+```
+
+These work well as a multi-turn sequence:
+
+```
+Show diabetic patients
+Only females
+Born after 1950
+Count them
+```
+
+The following will trigger a clarifying question about how to compute age — answer it and the query will proceed:
+
+```
+Show female diabetic patients over 65
+```
+
+### Condition queries
+
+```
+Show diabetes conditions
+Show active conditions
+Show COPD conditions
+Show conditions recorded in the last year
+Show conditions associated with female patients
+```
+
+### Observation queries
+
+```
+Show A1c observations
+Show observations recorded in the last 90 days
+Show observations for diabetic patients
+```
+
+### Encounter queries
+
+```
+Show encounters in the last 30 days
+Show encounters for diabetic patients
+Show encounters involving female patients
+Show COPD-related encounters
+```
+
+### Medication queries
+
+```
+Show metformin prescriptions
+Show prescriptions for diabetic patients
+```
+
+The following triggers a clarifying question about how to compute age — the TUI will ask and continue once you answer:
+
+```
+Show prescriptions for patients over 65
+```
+
+---
+
+## Seeing Projection Feedback in Action
+
+FHIR Query Copilot detects when the current projection is missing fields needed to answer a question, explains what is missing, and suggests what to add. Here is a quick way to see that feature end-to-end:
+
+**Step 1 — Index a minimal projection:**
+
+```bash
+uv run iris index-schema BASIC --namespace FHIRSERVER
+```
+
+The `BASIC` projection has no date fields, so time-window queries cannot be answered from it.
+
+**Step 2 — Ask a question that requires dates:**
+
+```bash
+make tui
+```
+
+```
+Show encounters in the last 30 days
+```
+
+The system will report that it cannot answer the question, identify the missing date field (`Encounter.period.start`), and suggest adding it to the projection.
+
+**Step 3 — Switch to a projection that includes dates:**
+
+Exit the TUI, re-index with `BASICWITHDATES` or `MEDICATIONS`, and try the same question:
+
+```bash
+uv run iris index-schema BASICWITHDATES --namespace FHIRSERVER
+make tui
+```
+
+```
+Show encounters in the last 30 days
+```
+
+This time the query succeeds, showing the generated SQL and results.
+
+---
 
 ## Why This Fits The Suggested Task
 
