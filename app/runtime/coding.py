@@ -1,10 +1,10 @@
-"""A small concept -> terminology code dictionary for the MVP.
+"""Concept -> terminology code lookup from the indexed schema dictionary.
 
-Binding resolves a filter's semantic ``concept`` (e.g. "diabetes", "metformin")
-to one or more :class:`Coding` entries via this map. It is intentionally tiny and
-hand-curated: enough to demonstrate the end-to-end intent for the contest demo,
-not a real terminology service. Lookups are case-insensitive and tolerant of a
-few common synonyms.
+Binding resolves a filter's semantic ``concept`` (e.g. "diabetes", "a1c") to one
+or more :class:`Coding` entries via the coding dictionary produced by
+``index-schema``. Keys are the lowercased ``display`` values sampled from coding
+child tables in the live FHIR projection. ``_SYNONYMS`` folds common phrasings
+onto a canonical key before lookup; it does not introduce codes or systems.
 """
 
 from __future__ import annotations
@@ -19,30 +19,7 @@ if TYPE_CHECKING:
 _DICT_CACHE: CodingDictionary | None = None
 _dict_loaded: bool = False
 
-ICD10 = "http://hl7.org/fhir/sid/icd-10-cm"
-SNOMED = "http://snomed.info/sct"
-LOINC = "http://loinc.org"
-RXNORM = "http://www.nlm.nih.gov/research/umls/rxnorm"
-
-# Canonical concept -> codes. Keys are lowercase; synonyms are folded in
-# ``_SYNONYMS`` below so several phrasings resolve to the same entry.
-SYNONYMS: dict[str, list[Coding]] = {
-    "diabetes": [
-        Coding(system=ICD10, code="E11", display="Type 2 diabetes mellitus"),
-        Coding(system=SNOMED, code="44054006", display="Diabetes mellitus type 2"),
-    ],
-    "heart failure": [
-        Coding(system=ICD10, code="I50", display="Heart failure"),
-        Coding(system=SNOMED, code="84114007", display="Heart failure"),
-    ],
-    "a1c": [
-        Coding(system=LOINC, code="4548-4", display="Hemoglobin A1c/Hemoglobin.total"),
-    ],
-    "metformin": [
-        Coding(system=RXNORM, code="6809", display="Metformin"),
-    ],
-}
-
+# Common phrasings -> canonical lookup key (must exist in the schema dictionary).
 _SYNONYMS: dict[str, str] = {
     "diabetic": "diabetes",
     "diabetes mellitus": "diabetes",
@@ -123,16 +100,18 @@ def _load_dict() -> CodingDictionary | None:
     return _DICT_CACHE
 
 
-def lookup_codes(concept: str) -> list[Coding]:
-    """Return the codes for ``concept``, or ``[]`` if it is not in the dictionary.
+def reset_coding_cache() -> None:
+    """Clear the in-process dictionary cache (for tests)."""
+    global _DICT_CACHE, _dict_loaded
+    _DICT_CACHE = None
+    _dict_loaded = False
 
-    Reads from the generated coding dictionary JSON when available (produced by
-    ``index-schema``), falling back to the hardcoded dicts for test environments
-    or when the file has not yet been generated.
-    """
+
+def lookup_codes(concept: str) -> list[Coding]:
+    """Return the codes for ``concept``, or ``[]`` if it is not in the dictionary."""
     key = concept.strip().lower()
-    key = _SYNONYMS.get(key, key)  # always use hardcoded aliases
+    key = _SYNONYMS.get(key, key)
     d = _load_dict()
-    if d is not None:
-        return d.lookup(key)
-    return SYNONYMS.get(key, [])
+    if d is None:
+        return []
+    return d.lookup(key)

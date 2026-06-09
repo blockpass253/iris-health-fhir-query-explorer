@@ -1,5 +1,6 @@
 """Persistence for the generated coding concept dictionary."""
 
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -23,15 +24,33 @@ class CodingDictionary(BaseModel):
     systems: dict[str, dict[str, CodingRef]]
 
     def lookup(self, concept: str) -> list[Coding]:
-        """Return all codes for ``concept`` across every terminology system."""
+        """Return all codes for ``concept`` across every terminology system.
+
+        Tries an exact key match first; falls back to a whole-word substring
+        match so generic drug names like "metformin" match full product display
+        strings like "24 hr metformin hydrochloride 500 mg ...".
+        """
         key = concept.strip().lower()
         results: list[Coding] = []
+        pattern: re.Pattern[str] | None = None
         for system, entries in self.systems.items():
             ref = entries.get(key)
             if ref is not None:
                 results.append(
                     Coding(system=system, code=ref.code, display=ref.display)
                 )
+            else:
+                if pattern is None:
+                    pattern = re.compile(r"\b" + re.escape(key) + r"\b")
+                for entry_key, entry_ref in entries.items():
+                    if pattern.search(entry_key):
+                        results.append(
+                            Coding(
+                                system=system,
+                                code=entry_ref.code,
+                                display=entry_ref.display,
+                            )
+                        )
         return results
 
     def set_coding(self, concept: str, coding: Coding) -> None:

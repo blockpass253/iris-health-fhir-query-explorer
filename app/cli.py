@@ -19,6 +19,7 @@ from app.commands.query import (
     format_sql,
     run_query_plan,
 )
+from app.commands.test_questions import run_test_questions
 from app.debug.dump import start_message
 from app.runtime.errors import InfeasibleQuery
 from app.schema.persistence.registry_store import DEFAULT_REGISTRY_PATH
@@ -71,6 +72,16 @@ def query(
     if result.sql is not None:
         console.print(format_sql(result.sql))
         console.print(format_results(result, result.bound.intent))
+
+
+@app.command("test-questions")
+def test_questions(
+    case: int | None = typer.Option(
+        None, "--case", help="Run only case N (1-based, 1–25)."
+    ),
+) -> None:
+    """Run integration tests for natural-language FHIR questions."""
+    asyncio.run(run_test_questions(case))
 
 
 @app.command("tui")

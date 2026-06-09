@@ -72,8 +72,7 @@ def profile_coding_entries(
 ) -> dict[str, dict[str, CodingRef]]:
     """Sample (system, code, display) from coding child tables.
 
-    Returns system -> display.lower() -> CodingRef. DB-derived only; merging with
-    hardcoded entries happens in the indexing orchestrator.
+    Returns system -> display.lower() -> CodingRef sampled from the projection.
     """
     result: dict[str, dict[str, CodingRef]] = {}
     # Global dedup: track (key, system, code) across all tables so the same code

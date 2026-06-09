@@ -437,28 +437,61 @@ def _child_fk_column(
 def _coding_predicate(
     bf: BoundFilter, registry: SchemaRegistry, alias: str
 ) -> tuple[str | None, list[Any]]:
-    """A nested EXISTS into the resource's coding child, matching (system, code)."""
+    """Match resolved (system, code) pairs for a concept filter.
+
+    Two cases:
+    - Resource has a separate coding-child table (e.g. ConditionCodeCodings):
+      emits a nested EXISTS into that child.
+    - Resource has flat coding columns on itself (e.g. MedicationRequest with
+      medicationCodeableConcept.coding.*): emits direct column predicates on
+      ``alias``, which is already inside the EXISTS wrapper from _exists_clause.
+    """
     child = coding_child(registry, bf.table)
-    if child is None:
+    if child is not None:
+        pairs: list[str] = []
+        cparams: list[Any] = []
+        for coding in bf.codings:
+            if child.system is not None and coding.system:
+                sys_col, code_col = child.system.column, child.code.column
+                pairs.append(
+                    f'({alias}c."{sys_col}" = ? AND {alias}c."{code_col}" = ?)'
+                )
+                cparams.extend([coding.system, coding.code])
+            else:
+                pairs.append(f'{alias}c."{child.code.column}" = ?')
+                cparams.append(coding.code)
+        if not pairs:
+            return None, []
+        clause = (
+            f"EXISTS (SELECT 1 FROM {_qualify(registry, child.table)} {alias}c "
+            f'WHERE {alias}c."{child.fk_column}" = {alias}."{_ID_COLUMN}" '
+            f"AND ({' OR '.join(pairs)}))"
+        )
+        return clause, cparams
+
+    # Flat coding: code/system columns live directly on the resource table.
+    table_meta = registry.tables.get(bf.table)
+    if table_meta is None:
         return None, []
-    pairs: list[str] = []
-    cparams: list[Any] = []
+    code_col = find_column(table_meta, terminal="code")
+    system_col = find_column(table_meta, terminal="system")
+    if code_col is None:
+        return None, []
+    pairs = []
+    cparams = []
     for coding in bf.codings:
-        if child.system is not None and coding.system:
-            sys_col, code_col = child.system.column, child.code.column
-            pairs.append(f'({alias}c."{sys_col}" = ? AND {alias}c."{code_col}" = ?)')
+        if system_col is not None and coding.system:
+            pairs.append(
+                f'({alias}."{system_col.column}" = ? '
+                f'AND {alias}."{code_col.column}" = ?)'
+            )
             cparams.extend([coding.system, coding.code])
         else:
-            pairs.append(f'{alias}c."{child.code.column}" = ?')
+            pairs.append(f'{alias}."{code_col.column}" = ?')
             cparams.append(coding.code)
     if not pairs:
         return None, []
-    clause = (
-        f"EXISTS (SELECT 1 FROM {_qualify(registry, child.table)} {alias}c "
-        f'WHERE {alias}c."{child.fk_column}" = {alias}."{_ID_COLUMN}" '
-        f"AND ({' OR '.join(pairs)}))"
-    )
-    return clause, cparams
+    return "(" + " OR ".join(pairs) + ")", cparams
 
 
 def _exists_clause(

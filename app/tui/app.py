@@ -47,7 +47,7 @@ def _to_text(content: RenderableType) -> str:
 class IrisTUI(App):
     """Interactive shell accepting slash commands and natural-language questions."""
 
-    TITLE = "IRIS Semantic Query Tool"
+    TITLE = "FHIR Query Copilot"
     CSS_PATH = "app.tcss"
     BINDINGS = [("ctrl+l", "clear", "Clear")]
 

@@ -5,7 +5,7 @@ The second of two LLM stages. Given the extracted :class:`QueryPlan` and a compa
 each abstract resource maps to and which concrete FHIR path each filter / time
 window binds to. That proposal is then *deterministically validated* against the
 registry so the model can never invent tables or paths, concept filters are
-resolved to codes via the synonym dictionary, and a feasibility verdict is
+resolved to codes via the coding dictionary, and a feasibility verdict is
 computed. The pipeline answers only when every resource, filter and time window
 grounds — otherwise the caller stops (see :class:`InfeasibleQuery`).
 """
@@ -95,7 +95,7 @@ def resolve_bound_plan(
     """Validate the LLM draft against the schema view and compute feasibility.
 
     Deterministic: drops proposed tables/paths that are not in the view, resolves
-    concepts to codes via the synonym dictionary, and records a ``missing`` entry
+    concepts to codes via the coding dictionary, and records a ``missing`` entry
     for every resource, filter, or time window that cannot be fully grounded.
     """
     by_name = {r.name.lower(): r for r in view.resources}

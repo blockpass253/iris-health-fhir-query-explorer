@@ -1,4 +1,4 @@
-"""Tests for the MVP concept -> code synonym dictionary."""
+"""Tests for schema-derived concept -> code lookup."""
 
 from app.runtime.coding import lookup_codes
 
@@ -17,3 +17,11 @@ def test_case_insensitive_and_synonyms():
 
 def test_unknown_concept_returns_empty():
     assert lookup_codes("unobtainium") == []
+
+
+def test_generic_drug_name_matches_via_substring():
+    # "metformin" is not an exact key; the dict has a full product display string.
+    codes = lookup_codes("metformin")
+    assert codes, "expected at least one metformin code via substring fallback"
+    assert any(c.code == "860975" for c in codes)
+    assert all("rxnorm" in c.system.lower() for c in codes)

@@ -9,7 +9,13 @@ def _resource(view, name):
 
 def test_only_root_resources_exposed(registry):
     view = build_schema_view(registry)
-    assert view.table_names() == {"Patient", "Condition", "Encounter", "Observation"}
+    assert view.table_names() == {
+        "Patient",
+        "Condition",
+        "Encounter",
+        "Observation",
+        "MedicationRequest",
+    }
     # Nested component tables must never surface as resources.
     assert "ObservationCodeCodings" not in view.table_names()
     assert "ConditionEncounters" not in view.table_names()

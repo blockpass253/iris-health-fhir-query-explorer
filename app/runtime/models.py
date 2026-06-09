@@ -116,7 +116,7 @@ class QueryPlan(BaseModel):
 
 
 class Coding(BaseModel):
-    """A terminology code for a semantic concept (from the synonym dictionary)."""
+    """A terminology code for a semantic concept (from the coding dictionary)."""
 
     system: str
     code: str

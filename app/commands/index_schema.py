@@ -11,7 +11,6 @@ from pathlib import Path
 
 from app.iris import IrisSettings, get_settings
 from app.logging.setup import get_logger
-from app.runtime.coding import SYNONYMS
 from app.schema.graph.builder import build_semantic_graph, render_graph_tree
 from app.schema.introspection.queries import (
     fetch_columns,
@@ -86,16 +85,11 @@ def run_index_schema(
         generated_at=datetime.now(UTC),
         systems=db_systems,
     )
-    for key, codings in SYNONYMS.items():
-        for coding in codings:
-            coding_dict.set_coding(key, coding)  # hardcoded always wins
     written_coding = save_coding_dictionary(coding_dict, coding_dict_path)
     log.info(
         "coding_dictionary.written",
         path=str(written_coding),
         concepts=coding_dict.concept_count,
-        db_derived=sum(len(e) for e in db_systems.values()),
-        hardcoded=len(SYNONYMS),
     )
 
     relationships = infer_relationships(tables, raw_fks)

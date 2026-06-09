@@ -98,6 +98,37 @@ def test_concept_filter_emits_nested_exists_with_system_code_pairs(registry):
     assert sql.params == ["http://loinc.org", "4548-4"]
 
 
+def test_concept_filter_flat_coding_on_resource_table(registry):
+    # MedicationRequest has no coding-child table; code/system are flat on the root.
+    # The concept filter must still produce an EXISTS clause, not be silently dropped.
+    codings = lookup_codes("metformin")
+    bound = BoundPlan(
+        intent="list",
+        resource_tables={
+            "Patient": "Patient",
+            "MedicationRequest": "MedicationRequest",
+        },
+        filters=[
+            BoundFilter(
+                filter=Filter(resource="MedicationRequest", concept="metformin"),
+                table="MedicationRequest",
+                codings=codings,
+            )
+        ],
+    )
+
+    sql = generate_sql(bound, registry)
+
+    assert 'FROM "TEST1"."Patient" r' in sql.sql
+    assert 'EXISTS (SELECT 1 FROM "TEST1"."MedicationRequest" r0' in sql.sql
+    assert 'r0."Patient" = \'Patient/\' || r."ID"' in sql.sql
+    # Coding predicate is direct on r0 (no inner coding-child EXISTS).
+    assert 'r0."System" = ?' in sql.sql
+    assert 'r0."Code" = ?' in sql.sql
+    assert '"ObservationCodeCodings"' not in sql.sql  # no spurious child table
+    assert len(sql.params) == 2  # one (system, code) pair
+
+
 def test_concept_filter_with_value_comparison_emits_both_predicates(registry):
     # A1c > 9: concept resolves to LOINC code (coding EXISTS) AND value > 9 (scalar).
     codings = lookup_codes("a1c")

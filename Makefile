@@ -40,6 +40,9 @@ typecheck: ## Type-check with pyright
 test: ## Run the test suite
 	uv run pytest
 
+test-questions: ## Run natural-language question integration tests (requires OPENAI_API_KEY)
+	uv run iris test-questions
+
 check: lint typecheck test ## Run lint, typecheck, and tests (local CI gate)
 
 precommit: ## Run all pre-commit hooks across the repo

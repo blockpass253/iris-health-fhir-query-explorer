@@ -128,18 +128,18 @@ def test_missing_resource_is_infeasible(registry):
     view = build_schema_view(registry)
     plan = QueryPlan(
         intent="list",
-        resources=["Patient", "MedicationRequest"],
-        filters=[Filter(resource="MedicationRequest", concept="metformin")],
+        resources=["Patient", "AllergyIntolerance"],
+        filters=[Filter(resource="AllergyIntolerance", concept="penicillin")],
     )
-    # The model could not map MedicationRequest (it isn't in TEST1).
+    # The model could not map AllergyIntolerance (it isn't in TEST1).
     draft = BindingDraft(
         resource_bindings=[
             ResourceBinding(resource="Patient", table="Patient"),
-            ResourceBinding(resource="MedicationRequest", table=None),
+            ResourceBinding(resource="AllergyIntolerance", table=None),
         ],
         filter_bindings=[
             FilterBinding(
-                resource="MedicationRequest", concept="metformin", table=None
+                resource="AllergyIntolerance", concept="penicillin", table=None
             ),
         ],
     )
@@ -147,7 +147,7 @@ def test_missing_resource_is_infeasible(registry):
     bound = resolve_bound_plan(plan, draft, view)
 
     assert not bound.feasibility.can_answer
-    assert any("MedicationRequest" in m for m in bound.feasibility.missing)
+    assert any("AllergyIntolerance" in m for m in bound.feasibility.missing)
 
 
 def test_unknown_concept_is_infeasible(registry):
@@ -172,34 +172,36 @@ def test_unknown_concept_is_infeasible(registry):
 
 def test_hallucinated_table_is_rejected(registry):
     view = build_schema_view(registry)
-    plan = QueryPlan(intent="list", resources=["MedicationRequest"])
+    plan = QueryPlan(intent="list", resources=["AllergyIntolerance"])
     # The model invents a table that is not in the schema view, for a resource
     # whose name also has no matching table.
     draft = BindingDraft(
         resource_bindings=[
-            ResourceBinding(resource="MedicationRequest", table="MedRequests")
+            ResourceBinding(resource="AllergyIntolerance", table="AllergyIntolerances")
         ]
     )
 
     bound = resolve_bound_plan(plan, draft, view)
 
     assert not bound.feasibility.can_answer
-    assert "MedicationRequest" not in bound.resource_tables
+    assert "AllergyIntolerance" not in bound.resource_tables
 
 
 def test_missing_resource_does_not_also_flag_its_filter(registry):
     view = build_schema_view(registry)
-    # MedicationRequest is not in the schema; its filter fails only because of
+    # AllergyIntolerance is not in the schema; its filter fails only because of
     # that. The missing list should name the resource once, not also the filter.
     plan = QueryPlan(
         intent="list",
-        resources=["MedicationRequest"],
-        filters=[Filter(resource="MedicationRequest", concept="metformin")],
+        resources=["AllergyIntolerance"],
+        filters=[Filter(resource="AllergyIntolerance", concept="penicillin")],
     )
     draft = BindingDraft(
-        resource_bindings=[ResourceBinding(resource="MedicationRequest", table=None)],
+        resource_bindings=[ResourceBinding(resource="AllergyIntolerance", table=None)],
         filter_bindings=[
-            FilterBinding(resource="MedicationRequest", concept="metformin", table=None)
+            FilterBinding(
+                resource="AllergyIntolerance", concept="penicillin", table=None
+            )
         ],
     )
 
@@ -207,7 +209,7 @@ def test_missing_resource_does_not_also_flag_its_filter(registry):
 
     assert not bound.feasibility.can_answer
     assert bound.feasibility.missing == [
-        "resource 'MedicationRequest' is not in the indexed schema"
+        "resource 'AllergyIntolerance' is not in the indexed schema"
     ]
 
 
@@ -352,20 +354,20 @@ def test_rank_root_resource_absent_is_infeasible(registry):
     view = build_schema_view(registry)
     plan = QueryPlan(
         intent="rank",
-        root_resource="MedicationRequest",
-        resources=["MedicationRequest"],
-        group_by=GroupBy(resource="MedicationRequest", concept=True),
+        root_resource="AllergyIntolerance",
+        resources=["AllergyIntolerance"],
+        group_by=GroupBy(resource="AllergyIntolerance", concept=True),
     )
     draft = BindingDraft(
-        resource_bindings=[ResourceBinding(resource="MedicationRequest", table=None)],
-        group_by_binding=GroupByBinding(resource="MedicationRequest", table=None),
+        resource_bindings=[ResourceBinding(resource="AllergyIntolerance", table=None)],
+        group_by_binding=GroupByBinding(resource="AllergyIntolerance", table=None),
     )
 
     bound = resolve_bound_plan(plan, draft, view)
 
     assert not bound.feasibility.can_answer
     assert any(
-        "root resource 'MedicationRequest'" in m for m in bound.feasibility.missing
+        "root resource 'AllergyIntolerance'" in m for m in bound.feasibility.missing
     )
 
 
