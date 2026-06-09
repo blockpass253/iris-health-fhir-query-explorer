@@ -280,7 +280,10 @@ def format_results(
 ) -> RenderableType:
     """Render execution results: a count, a row table, or an execution error."""
     if result.error is not None:
-        return f"[red]Execution failed:[/] {result.error}"
+        return (
+            "[red]Query execution failed.[/] "
+            "The database could not execute the generated SQL."
+        )
 
     rows = result.rows
     if isinstance(rows, int):  # non-SELECT rowcount (not expected for queries)

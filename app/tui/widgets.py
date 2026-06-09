@@ -155,7 +155,13 @@ class ResultsPanel(Vertical):
         result = self._result
         if result.error is not None:
             yield from self._header()
-            yield Static(Text(f"Execution failed: {result.error}", style="red"))
+            yield Static(
+                Text(
+                    "Query execution failed. "
+                    "The database could not execute the generated SQL.",
+                    style="red",
+                )
+            )
             return
 
         rows = result.rows
