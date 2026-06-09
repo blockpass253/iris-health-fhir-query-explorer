@@ -24,7 +24,7 @@ from app.schema.models.registry import (
 )
 
 # Keep each resource's path list compact for prompt economy.
-MAX_PATHS_PER_RESOURCE = 16
+MAX_PATHS_PER_RESOURCE = 30
 
 _CAMEL = re.compile(r"[A-Z][a-z0-9]*")
 _DATE_TYPES = {SemanticType.DATE, SemanticType.DATETIME}
